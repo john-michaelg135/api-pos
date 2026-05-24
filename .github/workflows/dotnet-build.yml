@@ -1,0 +1,39 @@
+name: Build .NET API
+
+on:
+  workflow_call:
+    inputs:
+      name:
+        description: 'Name of the service'
+        required: true
+        type: string
+      project-path:
+        description: 'Path to the project directory'
+        required: true
+        type: string
+      port:
+        description: 'Container port exposed by the app'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore ${{ inputs.project-path }}
+
+      - name: Build project
+        run: dotnet build ${{ inputs.project-path }} --no-restore --configuration Release
+
+      - name: Build Docker
+        run: docker build -t ${{ inputs.name }} -f ${{ inputs.project-path }}/Dockerfile ${{ inputs.project-path }}

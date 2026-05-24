@@ -1,0 +1,3 @@
+CREATE DATABASE pos_db;
+
+GRANT ALL PRIVILEGES ON DATABASE pos_db TO postgres;

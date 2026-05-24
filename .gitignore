@@ -1,0 +1,29 @@
+# Local environment/secrets
+.env
+
+# Docker/runtime data
+data/
+
+# .NET build output
+bin/
+obj/
+
+# IDE/editor files
+.vs/
+.vscode/
+*.user
+*.rsuser
+*.suo
+
+# Local Codex/agent workspace metadata
+.agents/
+.codex/
+
+# Logs/test output
+*.log
+TestResults/
+coverage/
+
+# OS files
+.DS_Store
+Thumbs.db

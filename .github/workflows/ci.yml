@@ -1,0 +1,28 @@
+name: Orchestration Build and Test
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  build-api:
+    strategy:
+      matrix:
+        name: [api-crm]
+        project-path: [.]
+        port: ["5005"]
+    uses: ./.github/workflows/dotnet-build.yml
+    with:
+      name: ${{ matrix.name }}
+      project-path: ${{ matrix.project-path }}
+      port: ${{ matrix.port }}
