@@ -1,4 +1,5 @@
 using Api.Contracts.Shared;
+using Api.Contracts.OrderEntry;
 
 namespace Api.Contracts.OrderManagement;
 
@@ -34,4 +35,5 @@ public class OrderManagementResponseDto
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
     public List<PaymentResponseDto> Payments { get; set; } = new();
+    public List<OrderItemResponseDto> Items { get; set; } = new();
 }

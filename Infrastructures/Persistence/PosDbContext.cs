@@ -197,6 +197,65 @@ public class PosDbContext : DbContext
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
+        // ── RefundRequest (Sprint 3 — US-POS-016/017) ──
+        modelBuilder.Entity<RefundRequest>(entity =>
+        {
+            entity.HasKey(e => e.RefundRequestId);
+            entity.Property(e => e.RefundRequestId).UseIdentityByDefaultColumn();
+            entity.Property(e => e.Reason).IsRequired().HasColumnType("text");
+            entity.Property(e => e.Status).IsRequired().HasMaxLength(30).HasDefaultValue("Pending");
+            entity.Property(e => e.QuantityToReturn).IsRequired();
+            entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.Property(e => e.UpdatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
+            // RequestedBy, ApprovedBy reference users in auth_db — stored as plain int, no FK constraint
+
+            entity.HasOne(e => e.Variation)
+                .WithMany()
+                .HasForeignKey(e => e.VariationId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        // ── StockAdjustment (Sprint 3 — US-POS-019/020) ──
+        modelBuilder.Entity<StockAdjustment>(entity =>
+        {
+            entity.HasKey(e => e.AdjustmentId);
+            entity.Property(e => e.AdjustmentId).UseIdentityByDefaultColumn();
+            entity.Property(e => e.AdjustmentType).IsRequired().HasMaxLength(30);
+            entity.Property(e => e.Quantity).IsRequired();
+            entity.Property(e => e.Reason).IsRequired().HasColumnType("text");
+            entity.Property(e => e.Status).IsRequired().HasMaxLength(30).HasDefaultValue("PendingApproval");
+            entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
+            // SubmittedBy, ApprovedBy reference users in auth_db — stored as plain int, no FK constraint
+
+            entity.HasOne(e => e.Variation)
+                .WithMany()
+                .HasForeignKey(e => e.VariationId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.Location)
+                .WithMany()
+                .HasForeignKey(e => e.LocationId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        // ── CartItem (Sprint 3 — CRMS read endpoint) ──
+        modelBuilder.Entity<CartItem>(entity =>
+        {
+            entity.HasKey(e => e.CartItemId);
+            entity.Property(e => e.CartItemId).UseIdentityByDefaultColumn();
+            entity.Property(e => e.CustomerId).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.Quantity).IsRequired();
+            entity.Property(e => e.UpdatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            // One cart item per customer per variation
+            entity.HasIndex(e => new { e.CustomerId, e.VariationId }).IsUnique();
+
+            entity.HasOne(e => e.Variation)
+                .WithMany()
+                .HasForeignKey(e => e.VariationId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
         // ── StockReceiving (audit log of stock deliveries) ──
         modelBuilder.Entity<StockReceiving>(entity =>
         {
@@ -230,4 +289,9 @@ public class PosDbContext : DbContext
     public DbSet<Voucher> Vouchers { get; set; }
     public DbSet<Stock> Stocks { get; set; }
     public DbSet<StockReceiving> StockReceivings { get; set; }
+
+    // Sprint 3
+    public DbSet<RefundRequest> RefundRequests { get; set; }
+    public DbSet<StockAdjustment> StockAdjustments { get; set; }
+    public DbSet<CartItem> CartItems { get; set; }
 }

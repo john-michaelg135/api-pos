@@ -27,6 +27,7 @@ services:
       ASPNETCORE_ENVIRONMENT: Development
       POSTGRES_DB_HOST: db
       POSTGRES_DB_PORT: 5432
+      AUTH_SERVICE_URL: http://host.docker.internal:5007
     ports:
       - "5005:5000"
     extra_hosts:

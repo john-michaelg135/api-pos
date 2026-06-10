@@ -10,12 +10,9 @@
 **/node_modules/
 **/coverage/
 **/TestResults/
-data/
-docker-compose*.yml
 .env
-.env.local
+.env.*
 .git/
 .gitignore
 Dockerfile
 README.md
-data/

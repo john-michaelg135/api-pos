@@ -1,0 +1,118 @@
+using Applications.Interfaces;
+using Api.Contracts.Refund;
+using Domains.Entities;
+using Infrastructures.Persistence;
+using Microsoft.EntityFrameworkCore;
+
+namespace Applications.Services;
+
+public class RefundService : IRefundService
+{
+    private readonly PosDbContext _db;
+    private readonly IInventoryService _inventoryService;
+
+    public RefundService(PosDbContext db, IInventoryService inventoryService)
+    {
+        _db = db;
+        _inventoryService = inventoryService;
+    }
+
+    // ────────────────────────────────────────────────────
+    // US-POS-016: Submit refund request — always saved as "Pending"
+    // ────────────────────────────────────────────────────
+
+    public async Task<RefundResponseDto> SubmitRefundAsync(CreateRefundRequestDto dto)
+    {
+        // Validate the referenced order exists
+        var order = await _db.Orders.FindAsync(dto.OrderId);
+        if (order == null)
+            throw new InvalidOperationException($"Order with ID {dto.OrderId} not found.");
+
+        // Validate the variation exists
+        var variation = await _db.ProductVariations.FindAsync(dto.VariationId);
+        if (variation == null)
+            throw new InvalidOperationException($"Product variation with ID {dto.VariationId} not found.");
+
+        if (dto.QuantityToReturn <= 0)
+            throw new InvalidOperationException("Quantity to return must be greater than zero.");
+
+        var now = DateTime.UtcNow;
+
+        // US-POS-016: Status is hardcoded to "Pending" — manager must review before any action
+        var refund = new RefundRequest
+        {
+            OrderId         = dto.OrderId,
+            VariationId     = dto.VariationId,
+            LocationId      = dto.LocationId,
+            QuantityToReturn = dto.QuantityToReturn,
+            Reason          = dto.Reason,
+            Status          = "Pending",
+            RequestedBy     = dto.RequestedBy,
+            CreatedAt       = now,
+            UpdatedAt       = now
+        };
+
+        await _db.RefundRequests.AddAsync(refund);
+        await _db.SaveChangesAsync();
+
+        return MapToResponse(refund);
+    }
+
+    // ────────────────────────────────────────────────────
+    // US-POS-017: Approve refund — restores stock and logs manager
+    // ────────────────────────────────────────────────────
+
+    public async Task<RefundResponseDto?> ApproveRefundAsync(int refundRequestId, ApproveRefundDto dto)
+    {
+        var refund = await _db.RefundRequests.FindAsync(refundRequestId);
+        if (refund == null) return null;
+
+        if (refund.Status != "Pending")
+            throw new InvalidOperationException($"Refund #{refundRequestId} is already '{refund.Status}'. Only Pending refunds can be approved.");
+
+        var now = DateTime.UtcNow;
+
+        // US-POS-017: Restore the returned quantity back into stock
+        await _inventoryService.RestoreStockAsync(refund.VariationId, refund.LocationId, refund.QuantityToReturn);
+
+        // US-POS-017: Log the exact manager who approved
+        refund.Status     = "Approved";
+        refund.ApprovedBy = dto.ApprovedBy;
+        refund.ApprovedAt = now;
+        refund.UpdatedAt  = now;
+
+        _db.RefundRequests.Update(refund);
+        await _db.SaveChangesAsync();
+
+        return MapToResponse(refund);
+    }
+
+    // ────────────────────────────────────────────────────
+    // Supporting: List all refund requests
+    // ────────────────────────────────────────────────────
+
+    public async Task<List<RefundResponseDto>> GetAllRefundsAsync()
+    {
+        var refunds = await _db.RefundRequests
+            .OrderByDescending(r => r.CreatedAt)
+            .ToListAsync();
+
+        return refunds.Select(MapToResponse).ToList();
+    }
+
+    private static RefundResponseDto MapToResponse(RefundRequest r) => new()
+    {
+        RefundRequestId = r.RefundRequestId,
+        OrderId         = r.OrderId,
+        VariationId     = r.VariationId,
+        LocationId      = r.LocationId,
+        QuantityToReturn = r.QuantityToReturn,
+        Reason          = r.Reason,
+        Status          = r.Status,
+        RequestedBy     = r.RequestedBy,
+        ApprovedBy      = r.ApprovedBy,
+        ApprovedAt      = r.ApprovedAt,
+        CreatedAt       = r.CreatedAt,
+        UpdatedAt       = r.UpdatedAt
+    };
+}

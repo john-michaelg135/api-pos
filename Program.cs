@@ -1,35 +1,65 @@
 using Microsoft.EntityFrameworkCore;
 using Infrastructures.Persistence;
+using Infrastructures.Externals;
 using Applications.Interfaces;
 using Applications.Services;
+using Api.Middlewares;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
+// ── Controllers & OpenAPI ──
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 
-// Dependency injection for POS services
+// ── Dependency Injection — POS Services ──
+
+// Sprint 1
 builder.Services.AddScoped<IProductCatalogService, ProductCatalogService>();
 builder.Services.AddScoped<IOrderEntryService, OrderEntryService>();
 builder.Services.AddScoped<ILocationService, LocationService>();
+
 // Sprint 2
 builder.Services.AddScoped<IOrderManagementService, OrderManagementService>();
 builder.Services.AddScoped<IInventoryService, InventoryService>();
 builder.Services.AddScoped<IAnalyticsService, AnalyticsService>();
+builder.Services.AddScoped<IVoucherService, VoucherService>();
 
-// Database connection string from environment variables
+// Sprint 3
+builder.Services.AddScoped<IRefundService, RefundService>();
+builder.Services.AddScoped<IStockAdjustmentService, StockAdjustmentService>();
+builder.Services.AddScoped<IScmsIntegrationService, ScmsIntegrationService>();
+builder.Services.AddScoped<ICrmsQueryService, CrmsQueryService>();
+
+// ── HTTP Clients ──
+
+// Auth service client (US-POS-023)
+var authServiceUrl = Environment.GetEnvironmentVariable("AUTH_SERVICE_URL") ?? "http://api-auth:5000";
+builder.Services.AddHttpClient("AuthService", client =>
+{
+    client.BaseAddress = new Uri(authServiceUrl);
+    client.Timeout     = TimeSpan.FromSeconds(5);
+});
+
+// SCMS integration client (US-POS-028)
+var scmsApiUrl = Environment.GetEnvironmentVariable("SCMS_API_BASE_URL") ?? "http://api-scm:5000";
+builder.Services.AddHttpClient<ScmsApiClient>(client =>
+{
+    client.BaseAddress = new Uri(scmsApiUrl);
+    client.Timeout     = TimeSpan.FromSeconds(30);
+});
+
+// ── Database ──
 var connectionString =
-    $"Host={Environment.GetEnvironmentVariable("POSTGRES_DB_HOST")};"+
-    $"Port={Environment.GetEnvironmentVariable("POSTGRES_DB_PORT")};"+
+    $"Host={Environment.GetEnvironmentVariable("POSTGRES_DB_HOST")};" +
+    $"Port={Environment.GetEnvironmentVariable("POSTGRES_DB_PORT")};" +
     $"Database=pos_db;" +
-    $"Username={Environment.GetEnvironmentVariable("POSTGRES_USERNAME")};"+
+    $"Username={Environment.GetEnvironmentVariable("POSTGRES_USERNAME")};" +
     $"Password={Environment.GetEnvironmentVariable("POSTGRES_PASSWORD")}";
 
 builder.Services.AddDbContext<PosDbContext>(options =>
     options.UseNpgsql(connectionString));
 
-// CORS for frontend (Next.js on port 3000)
+// ── CORS for frontend (Next.js on port 3000) ──
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
@@ -40,7 +70,7 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
-// Auto-run migrations if RUN_DB_MIGRATIONS=true
+// ── Auto-run migrations if RUN_DB_MIGRATIONS=true ──
 if (string.Equals(Environment.GetEnvironmentVariable("RUN_DB_MIGRATIONS"), "true", StringComparison.OrdinalIgnoreCase))
 {
     using var scope = app.Services.CreateScope();
@@ -48,7 +78,7 @@ if (string.Equals(Environment.GetEnvironmentVariable("RUN_DB_MIGRATIONS"), "true
     db.Database.Migrate();
 }
 
-// Configure the HTTP request pipeline.
+// ── HTTP Pipeline ──
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
@@ -61,6 +91,10 @@ if (app.Environment.IsDevelopment())
 // app.UseHttpsRedirection();
 
 app.UseCors("AllowFrontend");
+
+// US-POS-023: Auth validation middleware — validates JWT on every API call
+// Toggle with AUTH_MIDDLEWARE_ENABLED=true/false
+app.UseMiddleware<AuthValidationMiddleware>();
 
 app.UseAuthorization();
 

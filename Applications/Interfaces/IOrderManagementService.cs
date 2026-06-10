@@ -17,4 +17,9 @@ public interface IOrderManagementService
 
     // EC-012: Order progress tracking
     Task<OrderTrackingDto?> GetOrderTrackingAsync(int orderId);
+
+    // POS-016 & 017: Refunds
+    Task<OrderManagementResponseDto?> RequestRefundAsync(int orderId, string reason);
+    Task<OrderManagementResponseDto?> ApproveRefundAsync(int orderId, int approvedBy);
+    Task<OrderManagementResponseDto?> RejectRefundAsync(int orderId, int rejectedBy, string reason);
 }

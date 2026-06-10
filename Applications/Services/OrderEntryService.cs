@@ -200,6 +200,22 @@ public class OrderEntryService : IOrderEntryService
 
         await _db.SaveChangesAsync();
 
+        // POS-011: Auto deduct stock per item at this location
+        if (order.LocationId.HasValue)
+        {
+            foreach (var item in orderItems)
+            {
+                try
+                {
+                    await _inventoryService.DeductStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Stock may not be tracked for this item/location — log and continue
+                }
+            }
+        }
+
         // Return response with full details (order was just created, so it will always exist)
         return (await BuildOrderResponse(order.OrderId))!;
     }

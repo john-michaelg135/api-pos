@@ -112,4 +112,66 @@ public class OrderManagementController : ControllerBase
         if (tracking == null) return NotFound($"Order with ID {orderId} not found.");
         return Ok(tracking);
     }
+
+    // ── POS-016 & 017: Refunds ──
+
+    // PUT api-pos/order-management/orders/{orderId}/request-refund
+    [HttpPut("orders/{orderId:int}/request-refund")]
+    [ProducesResponseType(typeof(OrderManagementResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> RequestRefund(int orderId, [FromBody] RequestRefundDto dto)
+    {
+        if (dto == null || string.IsNullOrWhiteSpace(dto.Reason)) return BadRequest("Refund reason is required.");
+        try
+        {
+            var order = await _orderManagementService.RequestRefundAsync(orderId, dto.Reason);
+            if (order == null) return NotFound($"Order with ID {orderId} not found.");
+            return Ok(order);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
+
+    // PUT api-pos/order-management/orders/{orderId}/approve-refund
+    [HttpPut("orders/{orderId:int}/approve-refund")]
+    [ProducesResponseType(typeof(OrderManagementResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> ApproveRefund(int orderId, [FromBody] ApproveOrderDto dto)
+    {
+        if (dto == null) return BadRequest("Approval data is required.");
+        try
+        {
+            var order = await _orderManagementService.ApproveRefundAsync(orderId, dto.ApprovedBy);
+            if (order == null) return NotFound($"Order with ID {orderId} not found.");
+            return Ok(order);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
+
+    // PUT api-pos/order-management/orders/{orderId}/reject-refund
+    [HttpPut("orders/{orderId:int}/reject-refund")]
+    [ProducesResponseType(typeof(OrderManagementResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> RejectRefund(int orderId, [FromBody] RejectOrderDto dto)
+    {
+        if (dto == null || string.IsNullOrWhiteSpace(dto.RejectionRemarks)) return BadRequest("Rejection remarks are required.");
+        try
+        {
+            var order = await _orderManagementService.RejectRefundAsync(orderId, dto.RejectedBy, dto.RejectionRemarks);
+            if (order == null) return NotFound($"Order with ID {orderId} not found.");
+            return Ok(order);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
 }

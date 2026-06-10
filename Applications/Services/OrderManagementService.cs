@@ -1,5 +1,6 @@
 using Applications.Interfaces;
 using Api.Contracts.OrderManagement;
+using Api.Contracts.OrderEntry;
 using Api.Contracts.Shared;
 using Domains.Entities;
 using Infrastructures.Persistence;
@@ -25,6 +26,10 @@ public class OrderManagementService : IOrderManagementService
     public async Task<List<OrderManagementResponseDto>> GetPendingApprovalAsync()
     {
         var orders = await _db.Orders
+            .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.ProductVariation)
+                    .ThenInclude(v => v.Product)
+            .Include(o => o.Payments)
             .Where(o => o.OrderSource == "Ecommerce" && o.OrderStatus == "Pending")
             .OrderBy(o => o.CreatedAt)
             .ToListAsync();
@@ -34,7 +39,12 @@ public class OrderManagementService : IOrderManagementService
 
     public async Task<OrderManagementResponseDto?> ApproveOrderAsync(int orderId, ApproveOrderDto dto)
     {
-        var order = await _db.Orders.FindAsync(orderId);
+        var order = await _db.Orders
+            .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.ProductVariation)
+                    .ThenInclude(v => v.Product)
+            .Include(o => o.Payments)
+            .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
 
         if (order.OrderStatus != "Pending")
@@ -54,7 +64,12 @@ public class OrderManagementService : IOrderManagementService
 
     public async Task<OrderManagementResponseDto?> RejectOrderAsync(int orderId, RejectOrderDto dto)
     {
-        var order = await _db.Orders.FindAsync(orderId);
+        var order = await _db.Orders
+            .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.ProductVariation)
+                    .ThenInclude(v => v.Product)
+            .Include(o => o.Payments)
+            .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
 
         if (order.OrderStatus != "Pending")
@@ -99,6 +114,10 @@ public class OrderManagementService : IOrderManagementService
             query = query.Where(o => o.CreatedAt <= filter.DateTo.Value);
 
         var orders = await query
+            .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.ProductVariation)
+                    .ThenInclude(v => v.Product)
+            .Include(o => o.Payments)
             .OrderByDescending(o => o.CreatedAt)
             .ToListAsync();
 
@@ -113,6 +132,9 @@ public class OrderManagementService : IOrderManagementService
     {
         var order = await _db.Orders
             .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.ProductVariation)
+                    .ThenInclude(v => v.Product)
+            .Include(o => o.Payments)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
 
@@ -192,6 +214,99 @@ public class OrderManagementService : IOrderManagementService
     }
 
     // ────────────────────────────────────────────────────
+    // POS-016 & 017: Refunds
+    // ────────────────────────────────────────────────────
+
+    public async Task<OrderManagementResponseDto?> RequestRefundAsync(int orderId, string reason)
+    {
+        var order = await _db.Orders
+            .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.ProductVariation)
+                    .ThenInclude(v => v.Product)
+            .Include(o => o.Payments)
+            .FirstOrDefaultAsync(o => o.OrderId == orderId);
+        if (order == null) return null;
+
+        if (order.OrderStatus != "Completed")
+            throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Only Completed orders can be refunded.");
+
+        order.OrderStatus = "Refund Requested";
+        order.RejectionRemarks = reason; // Store reason here as agreed
+        order.UpdatedAt = DateTime.UtcNow;
+
+        _db.Orders.Update(order);
+        await _db.SaveChangesAsync();
+
+        return MapToResponse(order);
+    }
+
+    public async Task<OrderManagementResponseDto?> ApproveRefundAsync(int orderId, int approvedBy)
+    {
+        var order = await _db.Orders
+            .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.ProductVariation)
+                    .ThenInclude(v => v.Product)
+            .Include(o => o.Payments)
+            .FirstOrDefaultAsync(o => o.OrderId == orderId);
+            
+        if (order == null) return null;
+
+        if (order.OrderStatus != "Refund Requested")
+            throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Only Refund Requested orders can be approved.");
+
+        order.OrderStatus = "Refunded";
+        order.ApprovedBy = approvedBy;
+        order.ApprovedAt = DateTime.UtcNow;
+        order.UpdatedAt = DateTime.UtcNow;
+
+        _db.Orders.Update(order);
+        await _db.SaveChangesAsync();
+
+        // POS-017: Auto restore stock per item
+        if (order.LocationId.HasValue)
+        {
+            foreach (var item in order.OrderItems)
+            {
+                try
+                {
+                    await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Stock may not be tracked for this item/location
+                }
+            }
+        }
+
+        return MapToResponse(order);
+    }
+
+    public async Task<OrderManagementResponseDto?> RejectRefundAsync(int orderId, int rejectedBy, string reason)
+    {
+        var order = await _db.Orders
+            .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.ProductVariation)
+                    .ThenInclude(v => v.Product)
+            .Include(o => o.Payments)
+            .FirstOrDefaultAsync(o => o.OrderId == orderId);
+        if (order == null) return null;
+
+        if (order.OrderStatus != "Refund Requested")
+            throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Only Refund Requested orders can be rejected.");
+
+        // Revert to Completed if refund is rejected
+        order.OrderStatus = "Completed";
+        order.ApprovedBy = rejectedBy; // Log manager id
+        order.RejectionRemarks = $"Refund Rejected: {reason}";
+        order.UpdatedAt = DateTime.UtcNow;
+
+        _db.Orders.Update(order);
+        await _db.SaveChangesAsync();
+
+        return MapToResponse(order);
+    }
+
+    // ────────────────────────────────────────────────────
     // Private helpers
     // ────────────────────────────────────────────────────
 
@@ -224,7 +339,27 @@ public class OrderManagementService : IOrderManagementService
             ApprovedAt            = order.ApprovedAt,
             RejectionRemarks      = order.RejectionRemarks,
             CreatedAt             = order.CreatedAt,
-            UpdatedAt             = order.UpdatedAt
+            UpdatedAt             = order.UpdatedAt,
+            Payments = order.Payments?.Select(p => new PaymentResponseDto
+            {
+                PaymentId              = p.PaymentId,
+                OrderId                = p.OrderId,
+                AmountPaid             = p.AmountPaid,
+                PaymentChannel         = p.PaymentChannel,
+                GatewayReferenceNumber = p.GatewayReferenceNumber,
+                PaymentStatus          = p.PaymentStatus,
+                PaidAt                 = p.PaidAt
+            }).ToList() ?? new(),
+            Items = order.OrderItems?.Select(oi => new OrderItemResponseDto
+            {
+                ItemId        = oi.ItemId,
+                VariationId   = oi.VariationId,
+                ProductName   = oi.ProductVariation?.Product?.ProductName ?? string.Empty,
+                VariationName = oi.ProductVariation?.VariationName ?? string.Empty,
+                Quantity      = oi.Quantity,
+                UnitPrice     = oi.UnitPrice,
+                Subtotal      = oi.Subtotal
+            }).ToList() ?? new()
         };
     }
 }

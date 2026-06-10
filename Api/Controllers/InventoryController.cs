@@ -38,6 +38,15 @@ public class InventoryController : ControllerBase
         }
     }
 
+    // GET api-pos/inventory/stock-receiving
+    [HttpGet("stock-receiving")]
+    [ProducesResponseType(typeof(List<StockReceivingResponseDto>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetStockReceivingHistory()
+    {
+        var history = await _inventoryService.GetStockReceivingHistoryAsync();
+        return Ok(history);
+    }
+
     // ── POS-012: View stock per location ──
 
     // GET api-pos/inventory/stock?locationId=X
@@ -72,4 +81,5 @@ public class InventoryController : ControllerBase
         var alerts = await _inventoryService.GetLowStockAlertsAsync();
         return Ok(alerts);
     }
+
 }
