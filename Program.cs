@@ -10,6 +10,7 @@ var builder = WebApplication.CreateBuilder(args);
 // ── Controllers & OpenAPI ──
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
+builder.Services.AddHttpContextAccessor();
 
 // ── Dependency Injection — POS Services ──
 
@@ -70,12 +71,15 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
-// ── Auto-run migrations if RUN_DB_MIGRATIONS=true ──
-if (string.Equals(Environment.GetEnvironmentVariable("RUN_DB_MIGRATIONS"), "true", StringComparison.OrdinalIgnoreCase))
+// ── Auto-run migrations & seed data ──
+using (var scope = app.Services.CreateScope())
 {
-    using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<PosDbContext>();
-    db.Database.Migrate();
+    if (string.Equals(Environment.GetEnvironmentVariable("RUN_DB_MIGRATIONS"), "true", StringComparison.OrdinalIgnoreCase))
+    {
+        db.Database.Migrate();
+    }
+    await DbSeeder.SeedAsync(db);
 }
 
 // ── HTTP Pipeline ──

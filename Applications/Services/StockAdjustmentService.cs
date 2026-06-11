@@ -3,6 +3,8 @@ using Api.Contracts.StockAdjustment;
 using Domains.Entities;
 using Infrastructures.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Http;
+using Api.Middlewares;
 
 namespace Applications.Services;
 
@@ -10,11 +12,13 @@ public class StockAdjustmentService : IStockAdjustmentService
 {
     private readonly PosDbContext _db;
     private readonly IInventoryService _inventoryService;
+    private readonly IHttpContextAccessor _httpContextAccessor;
 
-    public StockAdjustmentService(PosDbContext db, IInventoryService inventoryService)
+    public StockAdjustmentService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor)
     {
         _db = db;
         _inventoryService = inventoryService;
+        _httpContextAccessor = httpContextAccessor;
     }
 
     // ────────────────────────────────────────────────────
@@ -35,6 +39,13 @@ public class StockAdjustmentService : IStockAdjustmentService
         var location = await _db.Locations.FindAsync(dto.LocationId);
         if (location == null)
             throw new InvalidOperationException($"Location with ID {dto.LocationId} not found.");
+
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier")
+        {
+            if (dto.LocationId != currentUser.LocationId)
+                throw new InvalidOperationException("You are not authorized to submit stock adjustments for other locations.");
+        }
 
         var validTypes = new[] { "Damage", "Loss", "Correction" };
         if (!validTypes.Contains(dto.AdjustmentType))
@@ -76,6 +87,12 @@ public class StockAdjustmentService : IStockAdjustmentService
 
         if (adjustment == null) return null;
 
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier" && adjustment.LocationId != currentUser.LocationId)
+        {
+            throw new InvalidOperationException("You are not authorized to approve stock adjustments for other locations.");
+        }
+
         if (adjustment.Status != "PendingApproval")
             throw new InvalidOperationException($"Adjustment #{adjustmentId} is already '{adjustment.Status}'. Only PendingApproval adjustments can be approved.");
 
@@ -111,7 +128,16 @@ public class StockAdjustmentService : IStockAdjustmentService
 
     public async Task<List<StockAdjustmentResponseDto>> GetAllAdjustmentsAsync()
     {
-        var adjustments = await _db.StockAdjustments
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        var query = _db.StockAdjustments.AsQueryable();
+
+        if (currentUser?.SubRole == "Cashier")
+        {
+            var locationId = currentUser.LocationId ?? 0;
+            query = query.Where(a => a.LocationId == locationId);
+        }
+
+        var adjustments = await query
             .Include(a => a.Variation)
                 .ThenInclude(v => v!.Product)
             .Include(a => a.Location)

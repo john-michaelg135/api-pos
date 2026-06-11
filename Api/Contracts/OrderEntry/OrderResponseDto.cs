@@ -9,6 +9,7 @@ public class OrderResponseDto
     public string OrderType { get; set; } = string.Empty;
     public string OrderSource { get; set; } = string.Empty;
     public string? LocationName { get; set; }
+    public int? LocationId { get; set; }
     public decimal TotalAmount { get; set; }
     
     // Sprint 2 Discount Auditing Fields

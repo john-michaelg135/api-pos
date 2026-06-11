@@ -17,6 +17,7 @@ public class OrderManagementResponseDto
     public decimal? VoucherDiscountAmount { get; set; }
     public int? CustomerId { get; set; }
     public int? LocationId { get; set; }
+    public string? LocationName { get; set; }
     public string? DeliveryAddress { get; set; }
 
     // Institutional address fields (US-POS-008)

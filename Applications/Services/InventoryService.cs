@@ -3,16 +3,20 @@ using Api.Contracts.Inventory;
 using Domains.Entities;
 using Infrastructures.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Http;
+using Api.Middlewares;
 
 namespace Applications.Services;
 
 public class InventoryService : IInventoryService
 {
     private readonly PosDbContext _db;
+    private readonly IHttpContextAccessor _httpContextAccessor;
 
-    public InventoryService(PosDbContext db)
+    public InventoryService(PosDbContext db, IHttpContextAccessor httpContextAccessor)
     {
         _db = db;
+        _httpContextAccessor = httpContextAccessor;
     }
 
     // ────────────────────────────────────────────────────
@@ -118,6 +122,12 @@ public class InventoryService : IInventoryService
 
     public async Task<List<StockResponseDto>> GetStockByLocationAsync(int locationId)
     {
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier" && currentUser.LocationId != locationId)
+        {
+            throw new InvalidOperationException("You are not authorized to view stocks for other locations.");
+        }
+
         var stocks = await _db.Stocks
             .Include(s => s.Variation)
                 .ThenInclude(v => v!.Product)
@@ -145,7 +155,16 @@ public class InventoryService : IInventoryService
 
     public async Task<List<StockResponseDto>> GetAllStockAsync()
     {
-        var stocks = await _db.Stocks
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        var query = _db.Stocks.AsQueryable();
+
+        if (currentUser?.SubRole == "Cashier")
+        {
+            var locationId = currentUser.LocationId ?? 0;
+            query = query.Where(s => s.LocationId == locationId);
+        }
+
+        var stocks = await query
             .Include(s => s.Variation)
                 .ThenInclude(v => v!.Product)
             .Include(s => s.Location)
@@ -172,7 +191,16 @@ public class InventoryService : IInventoryService
 
     public async Task<List<LowStockAlertDto>> GetLowStockAlertsAsync()
     {
-        var lowStocks = await _db.Stocks
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        var query = _db.Stocks.AsQueryable();
+
+        if (currentUser?.SubRole == "Cashier")
+        {
+            var locationId = currentUser.LocationId ?? 0;
+            query = query.Where(s => s.LocationId == locationId);
+        }
+
+        var lowStocks = await query
             .Include(s => s.Variation)
                 .ThenInclude(v => v!.Product)
             .Include(s => s.Location)

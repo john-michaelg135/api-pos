@@ -3,6 +3,8 @@ using Api.Contracts.Refund;
 using Domains.Entities;
 using Infrastructures.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Http;
+using Api.Middlewares;
 
 namespace Applications.Services;
 
@@ -10,11 +12,13 @@ public class RefundService : IRefundService
 {
     private readonly PosDbContext _db;
     private readonly IInventoryService _inventoryService;
+    private readonly IHttpContextAccessor _httpContextAccessor;
 
-    public RefundService(PosDbContext db, IInventoryService inventoryService)
+    public RefundService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor)
     {
         _db = db;
         _inventoryService = inventoryService;
+        _httpContextAccessor = httpContextAccessor;
     }
 
     // ────────────────────────────────────────────────────
@@ -27,6 +31,15 @@ public class RefundService : IRefundService
         var order = await _db.Orders.FindAsync(dto.OrderId);
         if (order == null)
             throw new InvalidOperationException($"Order with ID {dto.OrderId} not found.");
+
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier")
+        {
+            if (dto.LocationId != currentUser.LocationId)
+                throw new InvalidOperationException("You are not authorized to submit refunds for other locations.");
+            if (order.LocationId != currentUser.LocationId)
+                throw new InvalidOperationException("You are not authorized to submit refunds for orders of other locations.");
+        }
 
         // Validate the variation exists
         var variation = await _db.ProductVariations.FindAsync(dto.VariationId);
@@ -67,6 +80,12 @@ public class RefundService : IRefundService
         var refund = await _db.RefundRequests.FindAsync(refundRequestId);
         if (refund == null) return null;
 
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier" && refund.LocationId != currentUser.LocationId)
+        {
+            throw new InvalidOperationException("You are not authorized to approve refunds for other locations.");
+        }
+
         if (refund.Status != "Pending")
             throw new InvalidOperationException($"Refund #{refundRequestId} is already '{refund.Status}'. Only Pending refunds can be approved.");
 
@@ -93,7 +112,16 @@ public class RefundService : IRefundService
 
     public async Task<List<RefundResponseDto>> GetAllRefundsAsync()
     {
-        var refunds = await _db.RefundRequests
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        var query = _db.RefundRequests.AsQueryable();
+
+        if (currentUser?.SubRole == "Cashier")
+        {
+            var locationId = currentUser.LocationId ?? 0;
+            query = query.Where(r => r.LocationId == locationId);
+        }
+
+        var refunds = await query
             .OrderByDescending(r => r.CreatedAt)
             .ToListAsync();
 

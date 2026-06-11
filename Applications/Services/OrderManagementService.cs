@@ -5,6 +5,8 @@ using Api.Contracts.Shared;
 using Domains.Entities;
 using Infrastructures.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Http;
+using Api.Middlewares;
 
 namespace Applications.Services;
 
@@ -12,11 +14,13 @@ public class OrderManagementService : IOrderManagementService
 {
     private readonly PosDbContext _db;
     private readonly IInventoryService _inventoryService;
+    private readonly IHttpContextAccessor _httpContextAccessor;
 
-    public OrderManagementService(PosDbContext db, IInventoryService inventoryService)
+    public OrderManagementService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor)
     {
         _db = db;
         _inventoryService = inventoryService;
+        _httpContextAccessor = httpContextAccessor;
     }
 
     // ────────────────────────────────────────────────────
@@ -25,11 +29,21 @@ public class OrderManagementService : IOrderManagementService
 
     public async Task<List<OrderManagementResponseDto>> GetPendingApprovalAsync()
     {
-        var orders = await _db.Orders
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        var query = _db.Orders.AsQueryable();
+
+        if (currentUser?.SubRole == "Cashier")
+        {
+            var locationId = currentUser.LocationId ?? 0;
+            query = query.Where(o => o.LocationId == locationId);
+        }
+
+        var orders = await query
             .Include(o => o.OrderItems)
                 .ThenInclude(oi => oi.ProductVariation)
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
+            .Include(o => o.Location)
             .Where(o => o.OrderSource == "Ecommerce" && o.OrderStatus == "Pending")
             .OrderBy(o => o.CreatedAt)
             .ToListAsync();
@@ -44,8 +58,13 @@ public class OrderManagementService : IOrderManagementService
                 .ThenInclude(oi => oi.ProductVariation)
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
+            .Include(o => o.Location)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
+
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId)
+            throw new InvalidOperationException("You are not authorized to perform this action for other locations.");
 
         if (order.OrderStatus != "Pending")
             throw new InvalidOperationException($"Order {order.OrderNumber} is already {order.OrderStatus}. Only Pending orders can be approved.");
@@ -69,8 +88,13 @@ public class OrderManagementService : IOrderManagementService
                 .ThenInclude(oi => oi.ProductVariation)
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
+            .Include(o => o.Location)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
+
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId)
+            throw new InvalidOperationException("You are not authorized to perform this action for other locations.");
 
         if (order.OrderStatus != "Pending")
             throw new InvalidOperationException($"Order {order.OrderNumber} is already {order.OrderStatus}. Only Pending orders can be rejected.");
@@ -93,7 +117,19 @@ public class OrderManagementService : IOrderManagementService
 
     public async Task<List<OrderManagementResponseDto>> GetAllOrdersAsync(OrderFilterDto filter)
     {
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         var query = _db.Orders.AsQueryable();
+
+        if (currentUser?.SubRole == "Cashier")
+        {
+            var locationId = currentUser.LocationId ?? 0;
+            query = query.Where(o => o.LocationId == locationId);
+        }
+        else
+        {
+            if (filter.LocationId.HasValue)
+                query = query.Where(o => o.LocationId == filter.LocationId.Value);
+        }
 
         if (!string.IsNullOrWhiteSpace(filter.OrderStatus))
             query = query.Where(o => o.OrderStatus == filter.OrderStatus);
@@ -103,9 +139,6 @@ public class OrderManagementService : IOrderManagementService
 
         if (!string.IsNullOrWhiteSpace(filter.OrderType))
             query = query.Where(o => o.OrderType == filter.OrderType);
-
-        if (filter.LocationId.HasValue)
-            query = query.Where(o => o.LocationId == filter.LocationId.Value);
 
         if (filter.DateFrom.HasValue)
             query = query.Where(o => o.CreatedAt >= filter.DateFrom.Value);
@@ -118,6 +151,7 @@ public class OrderManagementService : IOrderManagementService
                 .ThenInclude(oi => oi.ProductVariation)
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
+            .Include(o => o.Location)
             .OrderByDescending(o => o.CreatedAt)
             .ToListAsync();
 
@@ -135,8 +169,13 @@ public class OrderManagementService : IOrderManagementService
                 .ThenInclude(oi => oi.ProductVariation)
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
+            .Include(o => o.Location)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
+
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId)
+            throw new InvalidOperationException("You are not authorized to perform this action for other locations.");
 
         if (order.PaymentMethod != "COD")
             throw new InvalidOperationException($"Only COD orders can be confirmed via delivery. This order uses {order.PaymentMethod}.");
@@ -224,8 +263,13 @@ public class OrderManagementService : IOrderManagementService
                 .ThenInclude(oi => oi.ProductVariation)
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
+            .Include(o => o.Location)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
+
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId)
+            throw new InvalidOperationException("You are not authorized to perform this action for other locations.");
 
         if (order.OrderStatus != "Completed")
             throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Only Completed orders can be refunded.");
@@ -247,9 +291,14 @@ public class OrderManagementService : IOrderManagementService
                 .ThenInclude(oi => oi.ProductVariation)
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
+            .Include(o => o.Location)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
             
         if (order == null) return null;
+
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId)
+            throw new InvalidOperationException("You are not authorized to perform this action for other locations.");
 
         if (order.OrderStatus != "Refund Requested")
             throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Only Refund Requested orders can be approved.");
@@ -288,8 +337,13 @@ public class OrderManagementService : IOrderManagementService
                 .ThenInclude(oi => oi.ProductVariation)
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
+            .Include(o => o.Location)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
+
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId)
+            throw new InvalidOperationException("You are not authorized to perform this action for other locations.");
 
         if (order.OrderStatus != "Refund Requested")
             throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Only Refund Requested orders can be rejected.");
@@ -326,6 +380,7 @@ public class OrderManagementService : IOrderManagementService
             VoucherDiscountAmount = order.VoucherDiscountAmount,
             CustomerId            = order.CustomerId,
             LocationId            = order.LocationId,
+            LocationName          = order.Location?.LocationName,
             DeliveryAddress       = order.DeliveryAddress,
             InstitutionalStreet   = order.InstitutionalStreet,
             InstitutionalCity     = order.InstitutionalCity,

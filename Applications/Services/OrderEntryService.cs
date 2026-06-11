@@ -4,6 +4,8 @@ using Api.Contracts.Shared;
 using Domains.Entities;
 using Infrastructures.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Http;
+using Api.Middlewares;
 
 namespace Applications.Services;
 
@@ -11,11 +13,13 @@ public class OrderEntryService : IOrderEntryService
 {
     private readonly PosDbContext _db;
     private readonly IInventoryService _inventoryService;
+    private readonly IHttpContextAccessor _httpContextAccessor;
 
-    public OrderEntryService(PosDbContext db, IInventoryService inventoryService)
+    public OrderEntryService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor)
     {
         _db = db;
         _inventoryService = inventoryService;
+        _httpContextAccessor = httpContextAccessor;
     }
 
     // ────────────────────────────────────────────────────
@@ -24,6 +28,12 @@ public class OrderEntryService : IOrderEntryService
 
     public async Task<List<ProductGridItemDto>> GetProductGridAsync(int? locationId = null)
     {
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier")
+        {
+            locationId = currentUser.LocationId;
+        }
+
         var gridItems = await _db.ProductVariations
             .AsNoTracking()
             .Where(v => v.IsActive && v.Product.IsActive)
@@ -74,6 +84,13 @@ public class OrderEntryService : IOrderEntryService
     public async Task<OrderResponseDto> CreateOrderAsync(CreateOrderDto dto)
     {
         var now = DateTime.UtcNow;
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier")
+        {
+            if (dto.LocationId.HasValue && dto.LocationId.Value != currentUser.LocationId)
+                throw new InvalidOperationException("You are not authorized to create orders for other locations.");
+            dto.LocationId = currentUser.LocationId;
+        }
 
         // Validate location exists (if provided)
         if (dto.LocationId.HasValue)
@@ -226,7 +243,16 @@ public class OrderEntryService : IOrderEntryService
 
     public async Task<List<OrderResponseDto>> GetAllOrdersAsync()
     {
-        var orders = await _db.Orders
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        var query = _db.Orders.AsQueryable();
+
+        if (currentUser?.SubRole == "Cashier")
+        {
+            var locationId = currentUser.LocationId ?? 0;
+            query = query.Where(o => o.LocationId == locationId);
+        }
+
+        var orders = await query
             .AsNoTracking()
             .Include(o => o.Location)
             .Include(o => o.OrderItems)
@@ -240,7 +266,16 @@ public class OrderEntryService : IOrderEntryService
 
     public async Task<OrderResponseDto?> GetOrderByIdAsync(int orderId)
     {
-        return await BuildOrderResponse(orderId);
+        var orderDto = await BuildOrderResponse(orderId);
+        if (orderDto == null) return null;
+
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier" && orderDto.LocationId != currentUser.LocationId)
+        {
+            throw new InvalidOperationException("You are not authorized to view orders from other locations.");
+        }
+
+        return orderDto;
     }
 
     // ────────────────────────────────────────────────────
@@ -323,6 +358,13 @@ public class OrderEntryService : IOrderEntryService
     public async Task<OrderResponseDto> CreateInstitutionalOrderAsync(CreateInstitutionalOrderDto dto)
     {
         var now = DateTime.UtcNow;
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier")
+        {
+            if (dto.LocationId.HasValue && dto.LocationId.Value != currentUser.LocationId)
+                throw new InvalidOperationException("You are not authorized to create orders for other locations.");
+            dto.LocationId = currentUser.LocationId;
+        }
 
         // Validate location if provided
         if (dto.LocationId.HasValue)
@@ -541,6 +583,7 @@ public class OrderEntryService : IOrderEntryService
             OrderType = order.OrderType,
             OrderSource = order.OrderSource,
             LocationName = order.Location?.LocationName,
+            LocationId = order.LocationId,
             TotalAmount = order.TotalAmount,
             AppliedVoucherCode = order.AppliedVoucherCode,
             VoucherDiscountAmount = order.VoucherDiscountAmount,
