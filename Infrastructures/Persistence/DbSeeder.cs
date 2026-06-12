@@ -9,6 +9,24 @@ public static class DbSeeder
     {
         Console.WriteLine("api-pos DbSeeder: Checking if location seed is needed...");
 
+        // Seed Commissary with LocationId = 999 if it does not exist
+        if (!await db.Locations.AnyAsync(l => l.LocationId == 999 || l.LocationName == "Commissary"))
+        {
+            Console.WriteLine("api-pos DbSeeder: Seeding Commissary (LocationId = 999)...");
+            try
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    "INSERT INTO \"Locations\" (\"LocationId\", \"LocationName\", \"LocationType\", \"IsActive\", \"CreatedAt\") " +
+                    "VALUES (999, 'Commissary', 'Commissary', true, NOW()) " +
+                    "ON CONFLICT (\"LocationId\") DO NOTHING;"
+                );
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"api-pos DbSeeder: Failed to seed Commissary: {ex.Message}");
+            }
+        }
+
         if (!await db.Locations.AnyAsync())
         {
             Console.WriteLine("api-pos DbSeeder: Seeding locations...");
