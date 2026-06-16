@@ -8,8 +8,6 @@
       "applicationUrl": "http://localhost:5137",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
-        "POSTGRES_DB_HOST": "localhost",
-        "POSTGRES_DB_PORT": "5435",
         "RUN_DB_MIGRATIONS": "true"
       }
     },
@@ -20,8 +18,6 @@
       "applicationUrl": "https://localhost:7259;http://localhost:5137",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
-        "POSTGRES_DB_HOST": "localhost",
-        "POSTGRES_DB_PORT": "5435",
         "RUN_DB_MIGRATIONS": "true"
       }
     }

@@ -51,6 +51,9 @@ builder.Services.AddScoped<IRefundNotificationService, RefundNotificationService
 builder.Services.AddScoped<IAuditLogService, AuditLogService>(); // US-POS-027
 builder.Services.AddScoped<AuditLogClient>(); // US-POS-027
 
+// E-Commerce Module 4
+builder.Services.AddScoped<ICustomerPortalService, CustomerPortalService>();
+
 // ── HTTP Clients ──
 
 // Auth service client (US-POS-023)
@@ -92,9 +95,10 @@ builder.Services.AddDbContext<PosDbContext>(options =>
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
-        policy.WithOrigins("http://localhost:3000")
+        policy.SetIsOriginAllowed(origin => true)
               .AllowAnyHeader()
-              .AllowAnyMethod());
+              .AllowAnyMethod()
+              .AllowCredentials());
 });
 
 var app = builder.Build();
