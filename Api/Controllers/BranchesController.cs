@@ -23,7 +23,7 @@ public class BranchesController : ControllerBase
     {
         var locations = await _db.Locations
             .AsNoTracking()
-            .Where(l => l.LocationType == "Branch" && l.IsActive)
+            .Where(l => (l.LocationType == "Store" || l.LocationType == "Bazaar") && l.IsActive)
             .ToListAsync();
 
         var response = new BranchListResponseDto
