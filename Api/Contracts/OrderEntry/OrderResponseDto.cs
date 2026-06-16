@@ -12,9 +12,6 @@ public class OrderResponseDto
     public int? LocationId { get; set; }
     public decimal TotalAmount { get; set; }
     
-    // Sprint 2 Discount Auditing Fields
-    public string? AppliedVoucherCode { get; set; }
-    public decimal? VoucherDiscountAmount { get; set; }
 
     public string OrderStatus { get; set; } = string.Empty;
     public string PaymentMethod { get; set; } = string.Empty;

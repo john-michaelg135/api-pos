@@ -5,12 +5,30 @@ using Applications.Interfaces;
 using Applications.Services;
 using Api.Middlewares;
 
+// ── Load .env file (if present) so `dotnet run` works without scripts ──
+var envPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".env");
+if (File.Exists(envPath))
+{
+    foreach (var line in File.ReadAllLines(envPath))
+    {
+        var trimmed = line.Trim();
+        if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith('#')) continue;
+        var idx = trimmed.IndexOf('=');
+        if (idx <= 0) continue;
+        var key   = trimmed[..idx].Trim();
+        var value = trimmed[(idx + 1)..].Split('#')[0].Trim(); // strip inline comments
+        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(key)))
+            Environment.SetEnvironmentVariable(key, value);
+    }
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 // ── Controllers & OpenAPI ──
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 builder.Services.AddHttpContextAccessor();
+builder.Services.AddSignalR(); // US-POS-025
 
 // ── Dependency Injection — POS Services ──
 
@@ -23,13 +41,15 @@ builder.Services.AddScoped<ILocationService, LocationService>();
 builder.Services.AddScoped<IOrderManagementService, OrderManagementService>();
 builder.Services.AddScoped<IInventoryService, InventoryService>();
 builder.Services.AddScoped<IAnalyticsService, AnalyticsService>();
-builder.Services.AddScoped<IVoucherService, VoucherService>();
 
 // Sprint 3
 builder.Services.AddScoped<IRefundService, RefundService>();
 builder.Services.AddScoped<IStockAdjustmentService, StockAdjustmentService>();
 builder.Services.AddScoped<IScmsIntegrationService, ScmsIntegrationService>();
 builder.Services.AddScoped<ICrmsQueryService, CrmsQueryService>();
+builder.Services.AddScoped<IRefundNotificationService, RefundNotificationService>(); // US-POS-025
+builder.Services.AddScoped<IAuditLogService, AuditLogService>(); // US-POS-027
+builder.Services.AddScoped<AuditLogClient>(); // US-POS-027
 
 // ── HTTP Clients ──
 
@@ -47,6 +67,14 @@ builder.Services.AddHttpClient<ScmsApiClient>(client =>
 {
     client.BaseAddress = new Uri(scmsApiUrl);
     client.Timeout     = TimeSpan.FromSeconds(30);
+});
+
+// Shared Audit service client (US-POS-027)
+var auditServiceUrl = Environment.GetEnvironmentVariable("AUDIT_SERVICE_URL") ?? "http://api-audit-logs:5000";
+builder.Services.AddHttpClient("AuditService", client =>
+{
+    client.BaseAddress = new Uri(auditServiceUrl);
+    client.Timeout     = TimeSpan.FromSeconds(5);
 });
 
 // ── Database ──
@@ -103,5 +131,6 @@ app.UseMiddleware<AuthValidationMiddleware>();
 app.UseAuthorization();
 
 app.MapControllers();
+app.MapHub<Api.Hubs.RefundHub>("/hubs/refund");
 
 app.Run();

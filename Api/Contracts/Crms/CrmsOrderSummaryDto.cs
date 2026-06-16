@@ -32,8 +32,6 @@ public class CrmsOrderPricingDto
 {
     /// <summary>Sum of all item subtotals for this order (before voucher).</summary>
     public decimal SubtotalAmount { get; set; }
-    public string? VoucherCode { get; set; }
-    public decimal? VoucherDiscountAmount { get; set; }
-    /// <summary>Final amount = SubtotalAmount - VoucherDiscountAmount.</summary>
+    /// <summary>Final amount = SubtotalAmount.</summary>
     public decimal TotalAmount { get; set; }
 }

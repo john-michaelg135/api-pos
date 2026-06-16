@@ -9,10 +9,12 @@ namespace Applications.Services;
 public class ProductCatalogService : IProductCatalogService
 {
     private readonly PosDbContext _db;
+    private readonly IAuditLogService _auditLogService;
 
-    public ProductCatalogService(PosDbContext db)
+    public ProductCatalogService(PosDbContext db, IAuditLogService auditLogService)
     {
         _db = db;
+        _auditLogService = auditLogService;
     }
 
     // ────────────────────────────────────────────────────
@@ -33,7 +35,18 @@ public class ProductCatalogService : IProductCatalogService
         await _db.Products.AddAsync(product);
         await _db.SaveChangesAsync();
 
-        return MapToProductResponse(product);
+        var response = MapToProductResponse(product);
+
+        _auditLogService.Log(
+            action: "Create",
+            entity: "Product",
+            entityId: product.ProductId,
+            before: null,
+            after: response,
+            performedBy: null
+        );
+
+        return response;
     }
 
     public async Task<ProductResponseDto?> UpdateProductAsync(int productId, UpdateProductDto dto)
@@ -54,7 +67,18 @@ public class ProductCatalogService : IProductCatalogService
         _db.Products.Update(product);
         await _db.SaveChangesAsync();
 
-        return MapToProductResponse(product);
+        var response = MapToProductResponse(product);
+
+        _auditLogService.Log(
+            action: "Update",
+            entity: "Product",
+            entityId: product.ProductId,
+            before: null, // Keep simple for now
+            after: response,
+            performedBy: null
+        );
+
+        return response;
     }
 
     public async Task<List<ProductResponseDto>> GetAllProductsAsync()

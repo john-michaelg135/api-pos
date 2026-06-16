@@ -147,22 +147,6 @@ public class PosDbContext : DbContext
             entity.Property(e => e.PaidAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
         });
 
-        // ── Voucher ──
-        modelBuilder.Entity<Voucher>(entity =>
-        {
-            entity.HasKey(e => e.VoucherId);
-            entity.Property(e => e.VoucherId).UseIdentityByDefaultColumn();
-            entity.Property(e => e.VoucherCode).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.DiscountType).IsRequired().HasMaxLength(20);
-            entity.Property(e => e.DiscountValue).IsRequired().HasColumnType("numeric(12,2)");
-            entity.Property(e => e.MinimumSpend).IsRequired().HasColumnType("numeric(12,2)").HasDefaultValue(0);
-            entity.Property(e => e.IsActive).IsRequired().HasDefaultValue(true);
-            entity.Property(e => e.ExpiryDate).IsRequired();
-            entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
-            
-            entity.HasIndex(e => e.VoucherCode).IsUnique();
-        });
-
         // ── OrderItem ──
         modelBuilder.Entity<OrderItem>(entity =>
         {
@@ -276,6 +260,31 @@ public class PosDbContext : DbContext
                 .HasForeignKey(e => e.LocationId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
+        // ── StockTransfer (Integration with SCMS) ──
+        modelBuilder.Entity<StockTransfer>(entity =>
+        {
+            entity.HasKey(e => e.TransferId);
+            entity.Property(e => e.TransferId).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.SourceLocationId).HasMaxLength(50);
+            entity.Property(e => e.SourceLocationName).HasMaxLength(100);
+            entity.Property(e => e.DestinationBranchId).HasMaxLength(50);
+            entity.Property(e => e.DestinationBranchName).HasMaxLength(100);
+            entity.Property(e => e.Status).IsRequired().HasMaxLength(30);
+            
+            entity.HasMany(e => e.Items)
+                .WithOne(i => i.Transfer)
+                .HasForeignKey(i => i.TransferId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<StockTransferItem>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).UseIdentityByDefaultColumn();
+            entity.Property(e => e.ProductId).HasMaxLength(50);
+            entity.Property(e => e.ProductName).HasMaxLength(150);
+            entity.Property(e => e.Quantity).IsRequired();
+        });
     }
 
     public DbSet<Product> Products { get; set; }
@@ -286,9 +295,11 @@ public class PosDbContext : DbContext
     public DbSet<Order> Orders { get; set; }
     public DbSet<OrderItem> OrderItems { get; set; }
     public DbSet<Payment> Payments { get; set; }
-    public DbSet<Voucher> Vouchers { get; set; }
+
     public DbSet<Stock> Stocks { get; set; }
     public DbSet<StockReceiving> StockReceivings { get; set; }
+    public DbSet<StockTransfer> StockTransfers { get; set; }
+    public DbSet<StockTransferItem> StockTransferItems { get; set; }
 
     // Sprint 3
     public DbSet<RefundRequest> RefundRequests { get; set; }

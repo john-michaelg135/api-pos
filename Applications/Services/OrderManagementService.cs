@@ -15,12 +15,14 @@ public class OrderManagementService : IOrderManagementService
     private readonly PosDbContext _db;
     private readonly IInventoryService _inventoryService;
     private readonly IHttpContextAccessor _httpContextAccessor;
+    private readonly IAuditLogService _auditLogService;
 
-    public OrderManagementService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor)
+    public OrderManagementService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor, IAuditLogService auditLogService)
     {
         _db = db;
         _inventoryService = inventoryService;
         _httpContextAccessor = httpContextAccessor;
+        _auditLogService = auditLogService;
     }
 
     // ────────────────────────────────────────────────────
@@ -376,8 +378,6 @@ public class OrderManagementService : IOrderManagementService
             PaymentMethod         = order.PaymentMethod,
             PaymentStatus         = order.PaymentStatus,
             TotalAmount           = order.TotalAmount,
-            AppliedVoucherCode    = order.AppliedVoucherCode,
-            VoucherDiscountAmount = order.VoucherDiscountAmount,
             CustomerId            = order.CustomerId,
             LocationId            = order.LocationId,
             LocationName          = order.Location?.LocationName,

@@ -14,12 +14,14 @@ public class OrderEntryService : IOrderEntryService
     private readonly PosDbContext _db;
     private readonly IInventoryService _inventoryService;
     private readonly IHttpContextAccessor _httpContextAccessor;
+    private readonly IAuditLogService _auditLogService;
 
-    public OrderEntryService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor)
+    public OrderEntryService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor, IAuditLogService auditLogService)
     {
         _db = db;
         _inventoryService = inventoryService;
         _httpContextAccessor = httpContextAccessor;
+        _auditLogService = auditLogService;
     }
 
     // ────────────────────────────────────────────────────
@@ -174,45 +176,8 @@ public class OrderEntryService : IOrderEntryService
 
         await _db.OrderItems.AddRangeAsync(orderItems);
 
-        // US-POS-033: Voucher Validation and Subtotal Deduction Math
-        decimal voucherDiscountAmount = 0;
-        string? appliedVoucherCode = null;
-
-        if (!string.IsNullOrWhiteSpace(dto.VoucherCode))
-        {
-            var voucher = await _db.Vouchers
-                .Where(v => v.VoucherCode == dto.VoucherCode.Trim() && v.IsActive && v.ExpiryDate > now)
-                .FirstOrDefaultAsync();
-
-            if (voucher == null)
-                throw new InvalidOperationException($"Voucher code '{dto.VoucherCode}' is invalid, inactive, or expired.");
-
-            if (totalAmount < voucher.MinimumSpend)
-                throw new InvalidOperationException($"Order subtotal must be at least {voucher.MinimumSpend:C} to apply voucher '{voucher.VoucherCode}'.");
-
-            appliedVoucherCode = voucher.VoucherCode;
-            if (voucher.DiscountType.Equals("Fixed", StringComparison.OrdinalIgnoreCase))
-            {
-                voucherDiscountAmount = voucher.DiscountValue;
-            }
-            else // Percentage
-            {
-                voucherDiscountAmount = Math.Round(totalAmount * (voucher.DiscountValue / 100m), 2);
-            }
-
-            // Ensure discount doesn't exceed total amount
-            if (voucherDiscountAmount > totalAmount)
-            {
-                voucherDiscountAmount = totalAmount;
-            }
-
-            totalAmount -= voucherDiscountAmount;
-        }
-
         // Update total amount and tracking properties
         order.TotalAmount = totalAmount;
-        order.AppliedVoucherCode = appliedVoucherCode;
-        order.VoucherDiscountAmount = voucherDiscountAmount > 0 ? voucherDiscountAmount : null;
         _db.Orders.Update(order);
 
         await _db.SaveChangesAsync();
@@ -234,7 +199,18 @@ public class OrderEntryService : IOrderEntryService
         }
 
         // Return response with full details (order was just created, so it will always exist)
-        return (await BuildOrderResponse(order.OrderId))!;
+        var response = await BuildOrderResponse(order.OrderId);
+        
+        _auditLogService.Log(
+            action: "Create",
+            entity: "Order",
+            entityId: order.OrderId,
+            before: null,
+            after: response,
+            performedBy: null // Let service pull from context
+        );
+
+        return response!;
     }
 
     // ────────────────────────────────────────────────────
@@ -527,31 +503,7 @@ public class OrderEntryService : IOrderEntryService
 
         await _db.OrderItems.AddRangeAsync(orderItems);
 
-        decimal voucherDiscount = 0;
-        string? appliedCode = null;
-
-        if (!string.IsNullOrWhiteSpace(dto.VoucherCode))
-        {
-            var voucher = await _db.Vouchers
-                .Where(v => v.VoucherCode == dto.VoucherCode.Trim() && v.IsActive && v.ExpiryDate > now)
-                .FirstOrDefaultAsync();
-
-            if (voucher == null)
-                throw new InvalidOperationException($"Voucher '{dto.VoucherCode}' is invalid, inactive, or expired.");
-            if (totalAmount < voucher.MinimumSpend)
-                throw new InvalidOperationException($"Minimum spend of {voucher.MinimumSpend:C} required.");
-
-            appliedCode = voucher.VoucherCode;
-            voucherDiscount = voucher.DiscountType.Equals("Fixed", StringComparison.OrdinalIgnoreCase)
-                ? voucher.DiscountValue
-                : Math.Round(totalAmount * (voucher.DiscountValue / 100m), 2);
-            if (voucherDiscount > totalAmount) voucherDiscount = totalAmount;
-            totalAmount -= voucherDiscount;
-        }
-
         order.TotalAmount           = totalAmount;
-        order.AppliedVoucherCode    = appliedCode;
-        order.VoucherDiscountAmount = voucherDiscount > 0 ? voucherDiscount : null;
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
 
@@ -585,8 +537,6 @@ public class OrderEntryService : IOrderEntryService
             LocationName = order.Location?.LocationName,
             LocationId = order.LocationId,
             TotalAmount = order.TotalAmount,
-            AppliedVoucherCode = order.AppliedVoucherCode,
-            VoucherDiscountAmount = order.VoucherDiscountAmount,
             OrderStatus = order.OrderStatus,
             PaymentMethod = order.PaymentMethod,
             PaymentStatus = order.PaymentStatus,
