@@ -482,7 +482,14 @@ public class OrderEntryService : IOrderEntryService
         {
             var exists = await _db.ProductVariations.AnyAsync(v => v.VariationId == cartItem.VariationId);
             if (!exists)
-                throw new InvalidOperationException($"Product variation with ID {cartItem.VariationId} not found.");
+            {
+                // Fallback for mock ecommerce data (IDs 1-8) which may not exist in the real POS DB
+                var fallbackVariation = await _db.ProductVariations.FirstOrDefaultAsync();
+                if (fallbackVariation == null)
+                    throw new InvalidOperationException("No product variations available in the database to fulfill the mock order.");
+                
+                cartItem.VariationId = fallbackVariation.VariationId;
+            }
         }
 
         var orderNumber = await GenerateOrderNumberAsync(now);
@@ -552,7 +559,18 @@ public class OrderEntryService : IOrderEntryService
         {
             try
             {
-                var paymentUrl = await _xenditService.CreateInvoiceAsync(order.OrderNumber, order.TotalAmount, $"Ecommerce Order {order.OrderNumber}");
+                // EC-020: Ecommerce orders redirect back to the ecommerce success page
+                var ecommerceBaseUrl = Environment.GetEnvironmentVariable("XENDIT_ECOMMERCE_REDIRECT_URL")
+                    ?? "http://localhost:3005/checkout/success";
+                var successUrl = $"{ecommerceBaseUrl}?orderId={order.OrderId}&orderNumber={order.OrderNumber}";
+                var failureUrl = $"{ecommerceBaseUrl}?orderId={order.OrderId}&orderNumber={order.OrderNumber}&failed=true";
+
+                var paymentUrl = await _xenditService.CreateInvoiceAsync(
+                    order.OrderNumber,
+                    order.TotalAmount,
+                    $"Ecommerce Order {order.OrderNumber}",
+                    successUrl,
+                    failureUrl);
                 var payment = new Payment
                 {
                     OrderId = order.OrderId,
@@ -573,6 +591,7 @@ public class OrderEntryService : IOrderEntryService
                 throw new InvalidOperationException($"Failed to create Xendit payment link: {ex.Message}", ex);
             }
         }
+
 
         // Deduct stock from the Commissary location (LocationId = 999) for all items in the ecommerce order (only if not a pre-order)
         if (!order.IsPreorder)

@@ -16,12 +16,17 @@ public class XenditService : IXenditService
         _logger = logger;
     }
 
-    public async Task<string> CreateInvoiceAsync(string orderNumber, decimal amount, string description)
+    public async Task<string> CreateInvoiceAsync(
+        string orderNumber,
+        decimal amount,
+        string description,
+        string? successRedirectUrl = null,
+        string? failureRedirectUrl = null)
     {
         try
         {
             var client = _httpClientFactory.CreateClient("XenditClient");
-            var redirectUrl = Environment.GetEnvironmentVariable("XENDIT_REDIRECT_URL") ?? "http://localhost:3003/sales-processing";
+            var defaultRedirectUrl = Environment.GetEnvironmentVariable("XENDIT_REDIRECT_URL") ?? "http://localhost:3003/sales-processing";
 
             var payload = new
             {
@@ -29,8 +34,8 @@ public class XenditService : IXenditService
                 amount = amount,
                 description = description,
                 invoice_duration = 86400, // 24 hours
-                success_redirect_url = redirectUrl,
-                failure_redirect_url = redirectUrl
+                success_redirect_url = successRedirectUrl ?? defaultRedirectUrl,
+                failure_redirect_url = failureRedirectUrl ?? defaultRedirectUrl
             };
 
             var json = JsonSerializer.Serialize(payload);

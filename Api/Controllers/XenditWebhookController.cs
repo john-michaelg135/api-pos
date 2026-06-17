@@ -106,4 +106,33 @@ public class XenditWebhookController : ControllerBase
 
         return Ok();
     }
+
+    // ──────────────────────────────────────────────────────────────────
+    // US-EC-021: Webhook audit log — GET /api-pos/webhooks/xendit/logs
+    // Returns all GCash/Xendit payment transactions for the manager dashboard.
+    // ──────────────────────────────────────────────────────────────────
+    [HttpGet("logs")]
+    public async Task<IActionResult> GetWebhookLogs()
+    {
+        var payments = await _db.Payments
+            .AsNoTracking()
+            .Include(p => p.Order)
+            .Where(p => p.PaymentChannel == "GCash")
+            .OrderByDescending(p => p.PaidAt)
+            .Select(p => new
+            {
+                paymentId              = p.PaymentId,
+                orderId                = p.OrderId,
+                orderNumber            = p.Order != null ? p.Order.OrderNumber : null,
+                orderSource            = p.Order != null ? p.Order.OrderSource : null,
+                amountPaid             = p.AmountPaid,
+                paymentChannel         = p.PaymentChannel,
+                paymentStatus          = p.PaymentStatus,
+                gatewayReferenceNumber = p.GatewayReferenceNumber,
+                paidAt                 = p.PaidAt
+            })
+            .ToListAsync();
+
+        return Ok(payments);
+    }
 }
