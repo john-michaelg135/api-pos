@@ -36,4 +36,25 @@ public class ScmsApiClient
             throw new InvalidOperationException($"Error deserializing SCMS delivery payload: {ex.Message}", ex);
         }
     }
+
+    /// <summary>
+    /// Updates the status of a specific stock transfer on the SCMS backend.
+    /// PUT {SCMS_API_BASE_URL}/api/StockTransfers/{transferId}/status
+    /// </summary>
+    public async Task UpdateTransferStatusAsync(int transferId, string status)
+    {
+        try
+        {
+            var response = await _http.PutAsJsonAsync($"/api/StockTransfers/{transferId}/status", new { status });
+            response.EnsureSuccessStatusCode();
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new InvalidOperationException($"Failed to update transfer status on SCM API: {ex.Message}", ex);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Error calling SCM API to update transfer status: {ex.Message}", ex);
+        }
+    }
 }

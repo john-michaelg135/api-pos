@@ -5,6 +5,7 @@ using Infrastructures.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Http;
 using Api.Middlewares;
+using Infrastructures.Externals;
 
 namespace Applications.Services;
 
@@ -12,11 +13,13 @@ public class InventoryService : IInventoryService
 {
     private readonly PosDbContext _db;
     private readonly IHttpContextAccessor _httpContextAccessor;
+    private readonly ScmsApiClient _scmsClient;
 
-    public InventoryService(PosDbContext db, IHttpContextAccessor httpContextAccessor)
+    public InventoryService(PosDbContext db, IHttpContextAccessor httpContextAccessor, ScmsApiClient scmsClient)
     {
         _db = db;
         _httpContextAccessor = httpContextAccessor;
+        _scmsClient = scmsClient;
     }
 
     // ────────────────────────────────────────────────────
@@ -78,6 +81,18 @@ public class InventoryService : IInventoryService
         }
 
         await _db.SaveChangesAsync();
+
+        if (dto.TransferId.HasValue)
+        {
+            try
+            {
+                await _scmsClient.UpdateTransferStatusAsync(dto.TransferId.Value, "Completed");
+            }
+            catch (System.Exception ex)
+            {
+                System.Console.WriteLine($"Error updating SCM transfer status for Transfer {dto.TransferId}: {ex.Message}");
+            }
+        }
 
         return new StockResponseDto
         {

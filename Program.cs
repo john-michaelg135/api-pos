@@ -5,6 +5,8 @@ using Applications.Interfaces;
 using Applications.Services;
 using Api.Middlewares;
 
+DotNetEnv.Env.Load();
+
 var builder = WebApplication.CreateBuilder(args);
 
 // ── Controllers & OpenAPI ──
@@ -23,13 +25,12 @@ builder.Services.AddScoped<ILocationService, LocationService>();
 builder.Services.AddScoped<IOrderManagementService, OrderManagementService>();
 builder.Services.AddScoped<IInventoryService, InventoryService>();
 builder.Services.AddScoped<IAnalyticsService, AnalyticsService>();
-builder.Services.AddScoped<IVoucherService, VoucherService>();
-
 // Sprint 3
 builder.Services.AddScoped<IRefundService, RefundService>();
 builder.Services.AddScoped<IStockAdjustmentService, StockAdjustmentService>();
 builder.Services.AddScoped<IScmsIntegrationService, ScmsIntegrationService>();
 builder.Services.AddScoped<ICrmsQueryService, CrmsQueryService>();
+builder.Services.AddScoped<IXenditService, XenditService>();
 
 // ── HTTP Clients ──
 
@@ -47,6 +48,16 @@ builder.Services.AddHttpClient<ScmsApiClient>(client =>
 {
     client.BaseAddress = new Uri(scmsApiUrl);
     client.Timeout     = TimeSpan.FromSeconds(30);
+});
+
+// Xendit client (US-POS-Xendit)
+builder.Services.AddHttpClient("XenditClient", client =>
+{
+    client.BaseAddress = new Uri("https://api.xendit.co/");
+    client.Timeout     = TimeSpan.FromSeconds(15);
+    var secretKey = Environment.GetEnvironmentVariable("XENDIT_SECRET_KEY") ?? string.Empty;
+    var base64Key = Convert.ToBase64String(System.Text.Encoding.ASCII.GetBytes($"{secretKey}:"));
+    client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", base64Key);
 });
 
 // ── Database ──

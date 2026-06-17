@@ -100,6 +100,26 @@ public class OrderManagementController : ControllerBase
         }
     }
 
+    // PUT api-pos/order-management/orders/{orderId}/status
+    [HttpPut("orders/{orderId:int}/status")]
+    [ProducesResponseType(typeof(OrderManagementResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> UpdateOrderStatus(int orderId, [FromBody] UpdateOrderStatusDto dto)
+    {
+        if (dto == null) return BadRequest("Status data is required.");
+        try
+        {
+            var order = await _orderManagementService.UpdateOrderStatusAsync(orderId, dto);
+            if (order == null) return NotFound($"Order with ID {orderId} not found.");
+            return Ok(order);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
+
     // ── EC-012: Order tracking for progress bar ──
 
     // GET api-pos/order-management/orders/{orderId}/tracking

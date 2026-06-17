@@ -146,23 +146,6 @@ public class PosDbContext : DbContext
             entity.Property(e => e.PaymentStatus).IsRequired().HasMaxLength(30);
             entity.Property(e => e.PaidAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
         });
-
-        // ── Voucher ──
-        modelBuilder.Entity<Voucher>(entity =>
-        {
-            entity.HasKey(e => e.VoucherId);
-            entity.Property(e => e.VoucherId).UseIdentityByDefaultColumn();
-            entity.Property(e => e.VoucherCode).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.DiscountType).IsRequired().HasMaxLength(20);
-            entity.Property(e => e.DiscountValue).IsRequired().HasColumnType("numeric(12,2)");
-            entity.Property(e => e.MinimumSpend).IsRequired().HasColumnType("numeric(12,2)").HasDefaultValue(0);
-            entity.Property(e => e.IsActive).IsRequired().HasDefaultValue(true);
-            entity.Property(e => e.ExpiryDate).IsRequired();
-            entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
-            
-            entity.HasIndex(e => e.VoucherCode).IsUnique();
-        });
-
         // ── OrderItem ──
         modelBuilder.Entity<OrderItem>(entity =>
         {
@@ -286,7 +269,6 @@ public class PosDbContext : DbContext
     public DbSet<Order> Orders { get; set; }
     public DbSet<OrderItem> OrderItems { get; set; }
     public DbSet<Payment> Payments { get; set; }
-    public DbSet<Voucher> Vouchers { get; set; }
     public DbSet<Stock> Stocks { get; set; }
     public DbSet<StockReceiving> StockReceivings { get; set; }
 

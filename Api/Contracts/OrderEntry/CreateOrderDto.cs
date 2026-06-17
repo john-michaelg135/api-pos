@@ -11,10 +11,5 @@ public class CreateOrderDto
     
     // Sprint 2 Pricing Controls
     public bool ApplyPwdDiscount { get; set; } = false;
-
-    [StringLength(15, MinimumLength = 5)]
-    [RegularExpression(@"^[a-zA-Z0-9\-_]+$", ErrorMessage = "Invalid voucher code format.")]
-    public string? VoucherCode { get; set; }
-
     public List<CartItemDto> Items { get; set; } = new();
 }

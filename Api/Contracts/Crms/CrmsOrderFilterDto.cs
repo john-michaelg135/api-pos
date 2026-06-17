@@ -23,7 +23,6 @@ public class CrmsOrderFilterDto
     public DateTime? DeliveredTo { get; set; }
 
     public int? OrderId { get; set; }
-    public string? VoucherCode { get; set; }
     public int? ProductId { get; set; }
 
     /// <summary>Field to sort by: orderedAt | totalAmount | orderStatus. Defaults to orderedAt.</summary>

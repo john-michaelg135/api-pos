@@ -27,7 +27,7 @@ public static class DbSeeder
             }
         }
 
-        if (!await db.Locations.AnyAsync())
+        if (!await db.Locations.AnyAsync(l => l.LocationId != 999))
         {
             Console.WriteLine("api-pos DbSeeder: Seeding locations...");
             

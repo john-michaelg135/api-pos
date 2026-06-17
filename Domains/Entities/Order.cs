@@ -26,10 +26,6 @@ public class Order
     
     public string OrderStatus { get; set; } = "Pending";   // Pending, Processing, etc.
     public decimal TotalAmount { get; set; }
-    
-    // Promotional Voucher Tracking Fields (Sprint 2 Panel Requirement)
-    public string? AppliedVoucherCode { get; set; }
-    public decimal? VoucherDiscountAmount { get; set; }
 
     public int? SubmittedBy { get; set; }    // FK to users (in auth_db, stored as plain int)
     public int? ApprovedBy { get; set; }     // FK to users (in auth_db, stored as plain int)
