@@ -63,19 +63,4 @@ public class CustomerPortalController : ControllerBase
 
         return Ok(tracking);
     }
-
-    [HttpPost("inquiries")]
-    [ProducesResponseType(StatusCodes.Status201Created)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> SubmitInquiry([FromBody] CustomerInquiryDto dto)
-    {
-        if (dto == null) return BadRequest("Inquiry data is required.");
-        if (string.IsNullOrWhiteSpace(dto.Name) || string.IsNullOrWhiteSpace(dto.Email) || string.IsNullOrWhiteSpace(dto.Message))
-        {
-            return BadRequest("Name, Email, and Message are required.");
-        }
-
-        var inquiry = await _customerPortalService.SubmitInquiryAsync(dto);
-        return CreatedAtAction(nameof(SubmitInquiry), new { id = inquiry.InquiryId }, inquiry);
-    }
 }

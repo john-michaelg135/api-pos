@@ -286,18 +286,7 @@ public class PosDbContext : DbContext
             entity.Property(e => e.Quantity).IsRequired();
         });
 
-        // ── CustomerInquiry (E-Commerce Module 4) ──
-        modelBuilder.Entity<CustomerInquiry>(entity =>
-        {
-            entity.HasKey(e => e.InquiryId);
-            entity.Property(e => e.InquiryId).UseIdentityByDefaultColumn();
-            entity.Property(e => e.Name).IsRequired().HasMaxLength(150);
-            entity.Property(e => e.Email).IsRequired().HasMaxLength(150);
-            entity.Property(e => e.Message).IsRequired().HasColumnType("text");
-            entity.Property(e => e.OrderReference).HasMaxLength(50);
-            entity.Property(e => e.Status).IsRequired().HasMaxLength(30).HasDefaultValue("Pending");
-            entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
-        });
+
     }
 
     public DbSet<Product> Products { get; set; }
@@ -318,5 +307,4 @@ public class PosDbContext : DbContext
     public DbSet<RefundRequest> RefundRequests { get; set; }
     public DbSet<StockAdjustment> StockAdjustments { get; set; }
     public DbSet<CartItem> CartItems { get; set; }
-    public DbSet<CustomerInquiry> CustomerInquiries { get; set; }
 }

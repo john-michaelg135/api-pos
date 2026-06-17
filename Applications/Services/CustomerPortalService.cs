@@ -72,22 +72,4 @@ public class CustomerPortalService : ICustomerPortalService
             LastUpdatedAt = order.UpdatedAt
         };
     }
-
-    public async Task<CustomerInquiry> SubmitInquiryAsync(CustomerInquiryDto dto)
-    {
-        var inquiry = new CustomerInquiry
-        {
-            Name = dto.Name,
-            Email = dto.Email,
-            Message = dto.Message,
-            OrderReference = dto.OrderReference,
-            Status = "Pending",
-            CreatedAt = DateTime.UtcNow
-        };
-
-        _db.CustomerInquiries.Add(inquiry);
-        await _db.SaveChangesAsync();
-
-        return inquiry;
-    }
 }
