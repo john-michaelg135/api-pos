@@ -57,4 +57,21 @@ public class ScmsApiClient
             throw new InvalidOperationException($"Error calling SCM API to update transfer status: {ex.Message}", ex);
         }
     }
+
+    /// <summary>
+    /// Sends a receive confirmation to the SCMS API when a branch receives a transfer.
+    /// </summary>
+    public async Task<bool> SendReceiveConfirmationAsync(string transferId, ReceiveConfirmationDto dto)
+    {
+        try
+        {
+            var response = await _http.PostAsJsonAsync($"/api/scms/transfers/{transferId}/receive-confirmation", dto);
+            response.EnsureSuccessStatusCode();
+            return true;
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new InvalidOperationException($"Failed to send confirmation to SCMS API: {ex.Message}", ex);
+        }
+    }
 }

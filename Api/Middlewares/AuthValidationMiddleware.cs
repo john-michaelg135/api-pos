@@ -19,7 +19,8 @@ public class AuthValidationMiddleware
     [
         "/openapi",
         "/swagger",
-        "/health"
+        "/health",
+        "/hubs"
     ];
 
     public AuthValidationMiddleware(
@@ -83,6 +84,10 @@ public class AuthValidationMiddleware
                 await context.Response.WriteAsJsonAsync(new { message = "Unauthorized: Token validation failed." });
                 return;
             }
+
+            // Validation succeeded. Decode the JWT and populate CurrentUserContext.
+            // This prevents services from needing to decode it manually on every call.
+            PopulateCurrentUserContext(context, token);
         }
         catch (HttpRequestException ex)
         {
@@ -94,5 +99,66 @@ public class AuthValidationMiddleware
         }
 
         await _next(context);
+    }
+
+    private void PopulateCurrentUserContext(HttpContext context, string token)
+    {
+        try
+        {
+            var parts = token.Split('.');
+            if (parts.Length < 2) return;
+            
+            var payloadPart = parts[1];
+            payloadPart = payloadPart.Replace('-', '+').Replace('_', '/');
+            switch (payloadPart.Length % 4)
+            {
+                case 2: payloadPart += "=="; break;
+                case 3: payloadPart += "="; break;
+            }
+            
+            var bytes = Convert.FromBase64String(payloadPart);
+            var json = System.Text.Encoding.UTF8.GetString(bytes);
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            var idStr = root.TryGetProperty("sub", out var idProp) ? idProp.GetString() : null;
+            var username = root.TryGetProperty("unique_name", out var userProp) ? userProp.GetString() : string.Empty;
+            
+            var apps = Array.Empty<string>();
+            if (root.TryGetProperty("apps", out var appsProp))
+            {
+                var appsJson = appsProp.GetString();
+                if (!string.IsNullOrEmpty(appsJson))
+                {
+                    apps = System.Text.Json.JsonSerializer.Deserialize<string[]>(appsJson) ?? Array.Empty<string>();
+                }
+            }
+
+            int? locationId = null;
+            if (root.TryGetProperty("location_id", out var locProp))
+            {
+                if (int.TryParse(locProp.GetString(), out var lid))
+                {
+                    locationId = lid;
+                }
+            }
+
+            var subRole = root.TryGetProperty("sub_role", out var roleProp) ? roleProp.GetString() : null;
+
+            var contextUser = new CurrentUserContext
+            {
+                Id = idStr != null && Guid.TryParse(idStr, out var gid) ? gid : Guid.Empty,
+                Username = username ?? string.Empty,
+                Apps = apps,
+                LocationId = locationId,
+                SubRole = subRole
+            };
+
+            context.Items["CurrentUser"] = contextUser;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to parse JWT payload to populate CurrentUserContext.");
+        }
     }
 }

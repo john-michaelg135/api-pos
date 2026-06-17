@@ -55,4 +55,9 @@ public class ScmsIntegrationService : IScmsIntegrationService
         summary.TotalErrors = summary.Errors.Count;
         return summary;
     }
+
+    public async Task<bool> ConfirmTransferAsync(string transferId, ReceiveConfirmationDto dto)
+    {
+        return await _scmsClient.SendReceiveConfirmationAsync(transferId, dto);
+    }
 }

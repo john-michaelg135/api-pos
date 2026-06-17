@@ -59,8 +59,6 @@ public class CrmsQueryService : ICrmsQueryService
         if (filter.OrderId.HasValue)
             query = query.Where(o => o.OrderId == filter.OrderId.Value);
 
-
-
         if (filter.ProductId.HasValue)
             query = query.Where(o => o.OrderItems.Any(
                 oi => oi.ProductVariation.ProductId == filter.ProductId.Value));

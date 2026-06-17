@@ -146,6 +146,7 @@ public class PosDbContext : DbContext
             entity.Property(e => e.PaymentStatus).IsRequired().HasMaxLength(30);
             entity.Property(e => e.PaidAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
         });
+
         // ── OrderItem ──
         modelBuilder.Entity<OrderItem>(entity =>
         {
@@ -259,6 +260,33 @@ public class PosDbContext : DbContext
                 .HasForeignKey(e => e.LocationId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
+        // ── StockTransfer (Integration with SCMS) ──
+        modelBuilder.Entity<StockTransfer>(entity =>
+        {
+            entity.HasKey(e => e.TransferId);
+            entity.Property(e => e.TransferId).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.SourceLocationId).HasMaxLength(50);
+            entity.Property(e => e.SourceLocationName).HasMaxLength(100);
+            entity.Property(e => e.DestinationBranchId).HasMaxLength(50);
+            entity.Property(e => e.DestinationBranchName).HasMaxLength(100);
+            entity.Property(e => e.Status).IsRequired().HasMaxLength(30);
+            
+            entity.HasMany(e => e.Items)
+                .WithOne(i => i.Transfer)
+                .HasForeignKey(i => i.TransferId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<StockTransferItem>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).UseIdentityByDefaultColumn();
+            entity.Property(e => e.ProductId).HasMaxLength(50);
+            entity.Property(e => e.ProductName).HasMaxLength(150);
+            entity.Property(e => e.Quantity).IsRequired();
+        });
+
+
     }
 
     public DbSet<Product> Products { get; set; }
@@ -271,6 +299,8 @@ public class PosDbContext : DbContext
     public DbSet<Payment> Payments { get; set; }
     public DbSet<Stock> Stocks { get; set; }
     public DbSet<StockReceiving> StockReceivings { get; set; }
+    public DbSet<StockTransfer> StockTransfers { get; set; }
+    public DbSet<StockTransferItem> StockTransferItems { get; set; }
 
     // Sprint 3
     public DbSet<RefundRequest> RefundRequests { get; set; }

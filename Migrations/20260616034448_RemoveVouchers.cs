@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -12,16 +12,9 @@ namespace api_pos.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(
-                name: "Vouchers");
-
-            migrationBuilder.DropColumn(
-                name: "AppliedVoucherCode",
-                table: "Orders");
-
-            migrationBuilder.DropColumn(
-                name: "VoucherDiscountAmount",
-                table: "Orders");
+            migrationBuilder.Sql("DROP TABLE IF EXISTS \"Vouchers\";");
+            migrationBuilder.Sql("ALTER TABLE \"Orders\" DROP COLUMN IF EXISTS \"AppliedVoucherCode\";");
+            migrationBuilder.Sql("ALTER TABLE \"Orders\" DROP COLUMN IF EXISTS \"VoucherDiscountAmount\";");
         }
 
         /// <inheritdoc />

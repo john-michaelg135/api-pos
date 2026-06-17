@@ -15,13 +15,20 @@ public class OrderEntryService : IOrderEntryService
     private readonly IInventoryService _inventoryService;
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly IXenditService _xenditService;
+    private readonly IAuditLogService _auditLogService;
 
-    public OrderEntryService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor, IXenditService xenditService)
+    public OrderEntryService(
+        PosDbContext db,
+        IInventoryService inventoryService,
+        IHttpContextAccessor httpContextAccessor,
+        IXenditService xenditService,
+        IAuditLogService auditLogService)
     {
         _db = db;
         _inventoryService = inventoryService;
         _httpContextAccessor = httpContextAccessor;
         _xenditService = xenditService;
+        _auditLogService = auditLogService;
     }
 
     // ────────────────────────────────────────────────────
@@ -178,6 +185,10 @@ public class OrderEntryService : IOrderEntryService
 
         await _db.OrderItems.AddRangeAsync(orderItems);
 
+
+
+        // Update total amount and tracking properties
+
         order.TotalAmount = totalAmount;
         _db.Orders.Update(order);
 
@@ -226,7 +237,18 @@ public class OrderEntryService : IOrderEntryService
         }
 
         // Return response with full details (order was just created, so it will always exist)
-        return (await BuildOrderResponse(order.OrderId))!;
+        var response = await BuildOrderResponse(order.OrderId);
+        
+        _auditLogService.Log(
+            action: "Create",
+            entity: "Order",
+            entityId: order.OrderId,
+            before: null,
+            after: response,
+            performedBy: null // Let service pull from context
+        );
+
+        return response!;
     }
 
     // ────────────────────────────────────────────────────

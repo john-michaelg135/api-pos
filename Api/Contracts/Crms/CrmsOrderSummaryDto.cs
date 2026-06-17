@@ -32,6 +32,8 @@ public class CrmsOrderPricingDto
 {
     /// <summary>Sum of all item subtotals for this order.</summary>
     public decimal SubtotalAmount { get; set; }
-    /// <summary>Final amount.</summary>
+
+    /// <summary>Final amount = SubtotalAmount.</summary>
+
     public decimal TotalAmount { get; set; }
 }

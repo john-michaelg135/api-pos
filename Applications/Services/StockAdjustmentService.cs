@@ -13,12 +13,14 @@ public class StockAdjustmentService : IStockAdjustmentService
     private readonly PosDbContext _db;
     private readonly IInventoryService _inventoryService;
     private readonly IHttpContextAccessor _httpContextAccessor;
+    private readonly IAuditLogService _auditLogService;
 
-    public StockAdjustmentService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor)
+    public StockAdjustmentService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor, IAuditLogService auditLogService)
     {
         _db = db;
         _inventoryService = inventoryService;
         _httpContextAccessor = httpContextAccessor;
+        _auditLogService = auditLogService;
     }
 
     // ────────────────────────────────────────────────────
@@ -70,7 +72,18 @@ public class StockAdjustmentService : IStockAdjustmentService
         await _db.StockAdjustments.AddAsync(adjustment);
         await _db.SaveChangesAsync();
 
-        return MapToResponse(adjustment, variation.VariationName, variation.Product?.ProductName ?? string.Empty, location.LocationName);
+        var response = MapToResponse(adjustment, variation.VariationName, variation.Product?.ProductName ?? string.Empty, location.LocationName);
+
+        _auditLogService.Log(
+            action: "Create",
+            entity: "StockAdjustment",
+            entityId: adjustment.AdjustmentId,
+            before: null,
+            after: response,
+            performedBy: null
+        );
+
+        return response;
     }
 
     // ────────────────────────────────────────────────────
@@ -115,11 +128,22 @@ public class StockAdjustmentService : IStockAdjustmentService
         _db.StockAdjustments.Update(adjustment);
         await _db.SaveChangesAsync();
 
-        return MapToResponse(
+        var response = MapToResponse(
             adjustment,
             adjustment.Variation?.VariationName ?? string.Empty,
             adjustment.Variation?.Product?.ProductName ?? string.Empty,
             adjustment.Location?.LocationName ?? string.Empty);
+
+        _auditLogService.Log(
+            action: "Update",
+            entity: "StockAdjustment",
+            entityId: adjustment.AdjustmentId,
+            before: new { Status = "PendingApproval" },
+            after: new { Status = "Approved", ApprovedBy = dto.ApprovedBy },
+            performedBy: null
+        );
+
+        return response;
     }
 
     // ────────────────────────────────────────────────────

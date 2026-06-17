@@ -13,14 +13,17 @@ public class InventoryService : IInventoryService
 {
     private readonly PosDbContext _db;
     private readonly IHttpContextAccessor _httpContextAccessor;
-    private readonly ScmsApiClient _scmsClient;
+private readonly ScmsApiClient _scmsClient;
+private readonly IAuditLogService _auditLogService;
 
-    public InventoryService(PosDbContext db, IHttpContextAccessor httpContextAccessor, ScmsApiClient scmsClient)
+    public InventoryService(PosDbContext db, IHttpContextAccessor httpContextAccessor, ScmsApiClient scmsClient, IAuditLogService auditLogService)
     {
         _db = db;
         _httpContextAccessor = httpContextAccessor;
         _scmsClient = scmsClient;
+        _auditLogService = auditLogService;
     }
+
 
     // ────────────────────────────────────────────────────
     // POS-010: Stock receiving from SCMS
@@ -82,6 +85,7 @@ public class InventoryService : IInventoryService
 
         await _db.SaveChangesAsync();
 
+
         if (dto.TransferId.HasValue)
         {
             try
@@ -94,7 +98,7 @@ public class InventoryService : IInventoryService
             }
         }
 
-        return new StockResponseDto
+        var response = new StockResponseDto
         {
             StockId = stock.StockId,
             VariationId = stock.VariationId,
@@ -105,6 +109,17 @@ public class InventoryService : IInventoryService
             Quantity = stock.Quantity,
             UpdatedAt = stock.UpdatedAt
         };
+
+        _auditLogService.Log(
+            action: "Create",
+            entity: "StockReceiving",
+            entityId: receiving.ReceivingId,
+            before: null,
+            after: response,
+            performedBy: null
+        );
+
+        return response;
     }
 
     public async Task<List<StockReceivingResponseDto>> GetStockReceivingHistoryAsync()
@@ -312,7 +327,7 @@ public class InventoryService : IInventoryService
         await _db.StockAdjustments.AddAsync(adjustment);
         await _db.SaveChangesAsync();
 
-        return new StockAdjustmentResponseDto
+        var response = new StockAdjustmentResponseDto
         {
             AdjustmentId = adjustment.AdjustmentId,
             VariationId = adjustment.VariationId,
@@ -325,6 +340,17 @@ public class InventoryService : IInventoryService
             CreatedAt = adjustment.CreatedAt,
             UpdatedAt = DateTime.UtcNow
         };
+
+        _auditLogService.Log(
+            action: "Create",
+            entity: "StockAdjustment",
+            entityId: adjustment.AdjustmentId,
+            before: null,
+            after: response,
+            performedBy: null
+        );
+
+        return response;
     }
 
     public async Task<StockAdjustmentResponseDto> ApproveStockAdjustmentAsync(int adjustmentId, int approvedBy)
@@ -378,7 +404,7 @@ public class InventoryService : IInventoryService
 
         await _db.SaveChangesAsync();
 
-        return new StockAdjustmentResponseDto
+        var response = new StockAdjustmentResponseDto
         {
             AdjustmentId = adjustment.AdjustmentId,
             VariationId = adjustment.VariationId,
@@ -392,5 +418,16 @@ public class InventoryService : IInventoryService
             CreatedAt = adjustment.CreatedAt,
             UpdatedAt = DateTime.UtcNow
         };
+
+        _auditLogService.Log(
+            action: "Update",
+            entity: "StockAdjustment",
+            entityId: adjustment.AdjustmentId,
+            before: new { Status = "Pending" },
+            after: new { Status = "Approved", ApprovedBy = approvedBy },
+            performedBy: null
+        );
+
+        return response;
     }
 }
