@@ -48,6 +48,14 @@ public class XenditWebhookController : ControllerBase
             if (order == null)
             {
                 _logger.LogWarning("Order with number {OrderNumber} not found for Xendit webhook callback", callback.ExternalId);
+                
+                // Allow Xendit's "Test and save" webhook verification to pass
+                if (callback.ExternalId.StartsWith("invoice_", StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation("Xendit webhook dashboard verification test succeeded.");
+                    return Ok(new { message = "Webhook test endpoint verified successfully." });
+                }
+
                 return NotFound($"Order {callback.ExternalId} not found.");
             }
 
