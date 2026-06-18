@@ -135,7 +135,21 @@ public class OrderEntryService : IOrderEntryService
             OrderStatus = isGcash ? "Pending" : "Completed",
             TotalAmount = 0,              // Will be calculated below
             CreatedAt = now,
-            UpdatedAt = now
+            UpdatedAt = now,
+            ContactPerson = dto.ContactPerson,
+            DeliveryAddress = dto.DeliveryAddress,
+            InstitutionalStreet = dto.InstitutionalStreet,
+            InstitutionalCity = dto.InstitutionalCity,
+            InstitutionalProvince = dto.InstitutionalProvince,
+            InstitutionalZipCode = dto.InstitutionalZipCode,
+            CustomVariationNotes = dto.CustomVariationNotes,
+            SeniorPwdId = dto.SeniorPwdId,
+            SeniorPwdName = dto.SeniorPwdName,
+            SeniorPwdStreet = dto.SeniorPwdStreet,
+            SeniorPwdBarangay = dto.SeniorPwdBarangay,
+            SeniorPwdCity = dto.SeniorPwdCity,
+            SeniorPwdProvince = dto.SeniorPwdProvince,
+            SeniorPwdZipCode = dto.SeniorPwdZipCode
         };
 
         await _db.Orders.AddAsync(order);

@@ -113,6 +113,15 @@ public class PosDbContext : DbContext
             entity.Property(e => e.ContactPerson).HasMaxLength(150);
             entity.Property(e => e.IsPreorder).IsRequired().HasDefaultValue(false);
             entity.Property(e => e.CustomVariationNotes).HasColumnType("text");
+
+            // Dedicated Senior/PWD Fields Configuration
+            entity.Property(e => e.SeniorPwdId).HasMaxLength(30);
+            entity.Property(e => e.SeniorPwdName).HasMaxLength(150);
+            entity.Property(e => e.SeniorPwdStreet).HasMaxLength(255);
+            entity.Property(e => e.SeniorPwdBarangay).HasMaxLength(100);
+            entity.Property(e => e.SeniorPwdCity).HasMaxLength(100);
+            entity.Property(e => e.SeniorPwdProvince).HasMaxLength(100);
+            entity.Property(e => e.SeniorPwdZipCode).HasMaxLength(20);
             entity.Property(e => e.PaymentMethod).IsRequired().HasMaxLength(20);
             entity.Property(e => e.PaymentStatus).IsRequired().HasMaxLength(20);
             entity.Property(e => e.OrderStatus).IsRequired().HasMaxLength(30);

@@ -20,6 +20,15 @@ public class Order
     public string? ContactPerson { get; set; }
     public bool IsPreorder { get; set; } = false;
     public string? CustomVariationNotes { get; set; }
+
+    // Dedicated Senior/PWD Fields
+    public string? SeniorPwdId { get; set; }
+    public string? SeniorPwdName { get; set; }
+    public string? SeniorPwdStreet { get; set; }
+    public string? SeniorPwdBarangay { get; set; }
+    public string? SeniorPwdCity { get; set; }
+    public string? SeniorPwdProvince { get; set; }
+    public string? SeniorPwdZipCode { get; set; }
     
     // Legacy payment fields preserved for API backwards compatibility during gateway transitions
     public string PaymentMethod { get; set; } = "Cash";    // Cash, GCash, BankTransfer, COD
