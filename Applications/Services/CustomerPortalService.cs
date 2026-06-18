@@ -22,10 +22,29 @@ public class CustomerPortalService : ICustomerPortalService
             .Include(o => o.OrderItems)
                 .ThenInclude(oi => oi.ProductVariation)
                     .ThenInclude(v => v.Product)
-            .Where(o => o.CustomerId == customerId && o.OrderSource == "E-Commerce")
+            .Where(o => o.CustomerId == customerId && (o.OrderSource == "E-Commerce" || o.OrderSource == "Ecommerce"))
             .OrderByDescending(o => o.CreatedAt)
             .ToListAsync();
 
+        return MapOrders(orders);
+    }
+
+    public async Task<List<CustomerOrderHistoryDto>> GetOrderHistoryByAuthIdAsync(string customerAuthId)
+    {
+        var orders = await _db.Orders
+            .AsNoTracking()
+            .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.ProductVariation)
+                    .ThenInclude(v => v.Product)
+            .Where(o => o.CustomerAuthId == customerAuthId && (o.OrderSource == "E-Commerce" || o.OrderSource == "Ecommerce"))
+            .OrderByDescending(o => o.CreatedAt)
+            .ToListAsync();
+
+        return MapOrders(orders);
+    }
+
+    private List<CustomerOrderHistoryDto> MapOrders(List<Order> orders)
+    {
         return orders.Select(o => new CustomerOrderHistoryDto
         {
             OrderId = o.OrderId,
@@ -51,8 +70,20 @@ public class CustomerPortalService : ICustomerPortalService
             .AsNoTracking()
             .FirstOrDefaultAsync(o => o.OrderId == orderId && o.CustomerId == customerId);
 
-        if (order == null) return null;
+        return order == null ? null : BuildTrackingDto(order);
+    }
 
+    public async Task<OrderTrackingDto?> GetOrderTrackingByAuthIdAsync(int orderId, string customerAuthId)
+    {
+        var order = await _db.Orders
+            .AsNoTracking()
+            .FirstOrDefaultAsync(o => o.OrderId == orderId && o.CustomerAuthId == customerAuthId);
+
+        return order == null ? null : BuildTrackingDto(order);
+    }
+
+    private static OrderTrackingDto BuildTrackingDto(Order order)
+    {
         int stage = 1;
         var status = order.OrderStatus.ToLower();
 

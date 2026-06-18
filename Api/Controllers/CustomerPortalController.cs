@@ -16,25 +16,18 @@ public class CustomerPortalController : ControllerBase
         _customerPortalService = customerPortalService;
     }
 
-    // Helper to get CustomerId from AuthToken
-    private int? GetCustomerId()
+    // Resolve customer identity: prefer GUID auth ID, fall back to int header
+    private (string? authId, int? customerId) GetCustomerIdentity()
     {
-        // JWT claims usually have "sub" or "nameid" for user ID
-        // Note: For actual auth from ms-authentication, check which claim holds the customer ID.
-        // Assuming user ID is stored in "id" or "nameid"
-        var claim = User.Claims.FirstOrDefault(c => c.Type == "id" || c.Type == "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier");
-        if (claim != null && int.TryParse(claim.Value, out int customerId))
-        {
-            return customerId;
-        }
-        
-        // Temporarily, we can also support an explicit header for testing if JWT is not fully hooked up for customers
-        if (Request.Headers.TryGetValue("X-Customer-Id", out var custIdStr) && int.TryParse(custIdStr, out int headerCustId))
-        {
-            return headerCustId;
-        }
+        // Try GUID-based auth ID first (set by frontend from user.id)
+        if (Request.Headers.TryGetValue("X-Auth-Id", out var authIdVal) && !string.IsNullOrWhiteSpace(authIdVal))
+            return (authIdVal.ToString(), null);
 
-        return null;
+        // Fall back to integer customer ID for legacy/POS use
+        if (Request.Headers.TryGetValue("X-Customer-Id", out var custIdStr) && int.TryParse(custIdStr, out int headerCustId))
+            return (null, headerCustId);
+
+        return (null, null);
     }
 
     [HttpGet("orders")]
@@ -42,11 +35,21 @@ public class CustomerPortalController : ControllerBase
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<IActionResult> GetOrderHistory()
     {
-        var customerId = GetCustomerId();
-        if (customerId == null) return Unauthorized("Customer ID not found in token.");
+        var (authId, customerId) = GetCustomerIdentity();
 
-        var orders = await _customerPortalService.GetOrderHistoryAsync(customerId.Value);
-        return Ok(orders);
+        if (authId != null)
+        {
+            var orders = await _customerPortalService.GetOrderHistoryByAuthIdAsync(authId);
+            return Ok(orders);
+        }
+
+        if (customerId != null)
+        {
+            var orders = await _customerPortalService.GetOrderHistoryAsync(customerId.Value);
+            return Ok(orders);
+        }
+
+        return Unauthorized("Customer identity not found in request headers.");
     }
 
     [HttpGet("orders/{orderId:int}/tracking")]
@@ -55,12 +58,18 @@ public class CustomerPortalController : ControllerBase
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetOrderTracking(int orderId)
     {
-        var customerId = GetCustomerId();
-        if (customerId == null) return Unauthorized("Customer ID not found in token.");
+        var (authId, customerId) = GetCustomerIdentity();
 
-        var tracking = await _customerPortalService.GetOrderTrackingAsync(orderId, customerId.Value);
+        OrderTrackingDto? tracking = null;
+
+        if (authId != null)
+            tracking = await _customerPortalService.GetOrderTrackingByAuthIdAsync(orderId, authId);
+        else if (customerId != null)
+            tracking = await _customerPortalService.GetOrderTrackingAsync(orderId, customerId.Value);
+        else
+            return Unauthorized("Customer identity not found in request headers.");
+
         if (tracking == null) return NotFound("Order not found or does not belong to this customer.");
-
         return Ok(tracking);
     }
 }

@@ -5,6 +5,7 @@ public class Order
     public int OrderId { get; set; }
     public string OrderNumber { get; set; } = string.Empty;
     public int? CustomerId { get; set; }     // FK to customers (nullable for walk-in)
+    public string? CustomerAuthId { get; set; } // Auth GUID from ms-authentication
     public int? LocationId { get; set; }     // FK to locations
     public string OrderType { get; set; } = "Store";       // Store, Bazaar, Online, Institutional
     public string OrderSource { get; set; } = "POS";       // POS or Ecommerce

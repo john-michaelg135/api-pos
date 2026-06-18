@@ -4,6 +4,7 @@ public class CreateEcommerceOrderDto
 {
     // Customer & Delivery
     public int? CustomerId { get; set; }
+    public string? CustomerAuthId { get; set; }  // Auth GUID from ms-authentication
     public string? ContactPerson { get; set; }
 
     // Normalized address fields (US-POS-008 / US-EC-008)

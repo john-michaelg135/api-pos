@@ -501,6 +501,7 @@ public class OrderEntryService : IOrderEntryService
             OrderSource           = "Ecommerce",
             LocationId            = 999, // Commissary Location ID
             CustomerId            = dto.CustomerId,
+            CustomerAuthId        = dto.CustomerAuthId,
             DeliveryAddress       = dto.DeliveryAddress,
             InstitutionalStreet   = dto.InstitutionalStreet,
             InstitutionalCity     = dto.InstitutionalCity,
