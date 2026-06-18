@@ -295,7 +295,20 @@ public class PosDbContext : DbContext
             entity.Property(e => e.Quantity).IsRequired();
         });
 
+        modelBuilder.Entity<OrderStatusHistory>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).UseIdentityByDefaultColumn();
+            entity.Property(e => e.OldStatus).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.NewStatus).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.Remarks).HasColumnType("text");
+            entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
 
+            entity.HasOne(e => e.Order)
+                .WithMany(o => o.StatusHistory)
+                .HasForeignKey(e => e.OrderId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
     }
 
     public DbSet<Product> Products { get; set; }
@@ -315,4 +328,5 @@ public class PosDbContext : DbContext
     public DbSet<RefundRequest> RefundRequests { get; set; }
     public DbSet<StockAdjustment> StockAdjustments { get; set; }
     public DbSet<CartItem> CartItems { get; set; }
+    public DbSet<OrderStatusHistory> OrderStatusHistories { get; set; }
 }

@@ -45,4 +45,5 @@ public class OrderManagementResponseDto
     public DateTime UpdatedAt { get; set; }
     public List<PaymentResponseDto> Payments { get; set; } = new();
     public List<OrderItemResponseDto> Items { get; set; } = new();
+    public List<OrderStatusHistoryResponseDto> StatusHistory { get; set; } = new();
 }

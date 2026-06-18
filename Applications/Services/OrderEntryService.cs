@@ -338,6 +338,7 @@ public class OrderEntryService : IOrderEntryService
         if (order.OrderStatus == "Completed")
             throw new InvalidOperationException($"Order {order.OrderNumber} is already completed.");
 
+        var oldStatus = order.OrderStatus;
         var now = DateTime.UtcNow;
         order.OrderStatus = "Completed";
         order.PaymentStatus = "Paid";
@@ -346,6 +347,18 @@ public class OrderEntryService : IOrderEntryService
         order.UpdatedAt = now;
 
         _db.Orders.Update(order);
+
+        // Record status history
+        var history = new OrderStatusHistory
+        {
+            OrderId = order.OrderId,
+            OldStatus = oldStatus,
+            NewStatus = "Completed",
+            ChangedBy = dto.SubmittedBy,
+            Remarks = "Walk-in order confirmed",
+            CreatedAt = now
+        };
+        await _db.OrderStatusHistories.AddAsync(history);
 
         // POS-031: Write Payment record on confirm
         var payment = new Payment

@@ -43,6 +43,7 @@ public class OrderManagementService : IOrderManagementService
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
             .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
             .Where(o => o.OrderSource == "Ecommerce" && (o.OrderStatus == "Pending" || o.OrderStatus == "Awaiting Stock"))
             .OrderBy(o => o.CreatedAt)
             .ToListAsync();
@@ -58,6 +59,7 @@ public class OrderManagementService : IOrderManagementService
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
             .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
 
@@ -68,12 +70,14 @@ public class OrderManagementService : IOrderManagementService
         if (order.OrderStatus != "Pending" && order.OrderStatus != "Awaiting Stock")
             throw new InvalidOperationException($"Order {order.OrderNumber} is already {order.OrderStatus}. Only Pending or Awaiting Stock orders can be approved.");
 
+        var currentStatus = order.OrderStatus;
         var now = DateTime.UtcNow;
         order.OrderStatus = "Processing";
         order.ApprovedBy = dto.ApprovedBy;
         order.ApprovedAt = now;
         order.UpdatedAt = now;
 
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Processing", dto.ApprovedBy, "Order approved");
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
 
@@ -104,6 +108,7 @@ public class OrderManagementService : IOrderManagementService
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
             .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
 
@@ -117,12 +122,14 @@ public class OrderManagementService : IOrderManagementService
         // Restore reserved stock back to location (e.g. Commissary 999) on cancellation/rejection, ONLY if it was previously deducted
         bool shouldRestoreStock = order.LocationId.HasValue && (!order.IsPreorder || (order.IsPreorder && order.OrderStatus != "Awaiting Stock"));
 
+        var currentStatus = order.OrderStatus;
         var now = DateTime.UtcNow;
         order.OrderStatus = "Cancelled";
         order.ApprovedBy = dto.RejectedBy;
         order.RejectionRemarks = dto.RejectionRemarks;
         order.UpdatedAt = now;
 
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Cancelled", dto.RejectedBy, $"Order rejected: {dto.RejectionRemarks}");
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
 
@@ -186,6 +193,7 @@ public class OrderManagementService : IOrderManagementService
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
             .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
             .OrderByDescending(o => o.CreatedAt)
             .ToListAsync();
 
@@ -204,6 +212,7 @@ public class OrderManagementService : IOrderManagementService
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
             .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
 
@@ -217,6 +226,7 @@ public class OrderManagementService : IOrderManagementService
         if (order.OrderStatus == "Completed")
             throw new InvalidOperationException($"Order {order.OrderNumber} is already completed.");
 
+        var currentStatus = order.OrderStatus;
         var now = DateTime.UtcNow;
         order.OrderStatus   = "Completed";
         order.PaymentStatus = "Paid";
@@ -224,6 +234,7 @@ public class OrderManagementService : IOrderManagementService
         order.ApprovedAt    = now;
         order.UpdatedAt     = now;
 
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Completed", confirmedBy, "COD delivery confirmed");
         _db.Orders.Update(order);
 
         // POS-031: Write Payment record on delivery confirm
@@ -266,6 +277,7 @@ public class OrderManagementService : IOrderManagementService
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
             .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
 
@@ -294,6 +306,8 @@ public class OrderManagementService : IOrderManagementService
         order.ApprovedBy = dto.UpdatedBy;
         order.UpdatedAt = now;
 
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, targetStatus, dto.UpdatedBy, $"Status updated via panel");
+
         if (string.Equals(targetStatus, "Processing", StringComparison.OrdinalIgnoreCase))
         {
             order.ApprovedAt = now;
@@ -318,6 +332,24 @@ public class OrderManagementService : IOrderManagementService
             // Restore reserved stock if cancelled, ONLY if it was previously deducted
             bool shouldRestoreStock = order.LocationId.HasValue && (!order.IsPreorder || (order.IsPreorder && currentStatus != "Awaiting Stock"));
             if (shouldRestoreStock)
+            {
+                foreach (var item in order.OrderItems)
+                {
+                    try
+                    {
+                        await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        System.Console.WriteLine($"UpdateOrderStatusAsync: Stock restoration skipped for VariationId {item.VariationId} at Location {order.LocationId.Value}: {ex.Message}");
+                    }
+                }
+            }
+        }
+        else if (string.Equals(targetStatus, "Refunded", StringComparison.OrdinalIgnoreCase))
+        {
+            // Restore reserved stock if refunded directly
+            if (order.LocationId.HasValue)
             {
                 foreach (var item in order.OrderItems)
                 {
@@ -398,6 +430,7 @@ public class OrderManagementService : IOrderManagementService
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
             .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
 
@@ -405,13 +438,15 @@ public class OrderManagementService : IOrderManagementService
         if (currentUser?.SubRole == "Cashier" && (order.LocationId != currentUser.LocationId || order.OrderSource == "Ecommerce"))
             throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
 
-        if (order.OrderStatus != "Completed")
-            throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Only Completed orders can be refunded.");
+        if (order.OrderStatus != "Completed" && order.PaymentStatus != "Paid")
+            throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus} (Payment: {order.PaymentStatus}). Only Paid or Completed orders can be refunded.");
 
+        var currentStatus = order.OrderStatus;
         order.OrderStatus = "Refund Requested";
         order.RejectionRemarks = reason; // Store reason here as agreed
         order.UpdatedAt = DateTime.UtcNow;
 
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Refund Requested", 1, reason);
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
 
@@ -426,6 +461,7 @@ public class OrderManagementService : IOrderManagementService
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
             .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
             
         if (order == null) return null;
@@ -437,11 +473,13 @@ public class OrderManagementService : IOrderManagementService
         if (order.OrderStatus != "Refund Requested")
             throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Only Refund Requested orders can be approved.");
 
+        var currentStatus = order.OrderStatus;
         order.OrderStatus = "Refunded";
         order.ApprovedBy = approvedBy;
         order.ApprovedAt = DateTime.UtcNow;
         order.UpdatedAt = DateTime.UtcNow;
 
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Refunded", approvedBy, "Refund approved");
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
 
@@ -472,6 +510,7 @@ public class OrderManagementService : IOrderManagementService
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
             .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
 
@@ -483,11 +522,13 @@ public class OrderManagementService : IOrderManagementService
             throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Only Refund Requested orders can be rejected.");
 
         // Revert to Completed if refund is rejected
+        var currentStatus = order.OrderStatus;
         order.OrderStatus = "Completed";
         order.ApprovedBy = rejectedBy; // Log manager id
         order.RejectionRemarks = $"Refund Rejected: {reason}";
         order.UpdatedAt = DateTime.UtcNow;
 
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Completed", rejectedBy, $"Refund rejected: {reason}");
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
 
@@ -497,6 +538,20 @@ public class OrderManagementService : IOrderManagementService
     // ────────────────────────────────────────────────────
     // Private helpers
     // ────────────────────────────────────────────────────
+
+    private async Task RecordStatusHistoryAsync(int orderId, string oldStatus, string newStatus, int? changedBy, string? remarks = null)
+    {
+        var history = new OrderStatusHistory
+        {
+            OrderId = orderId,
+            OldStatus = oldStatus,
+            NewStatus = newStatus,
+            ChangedBy = changedBy,
+            Remarks = remarks,
+            CreatedAt = DateTime.UtcNow
+        };
+        await _db.OrderStatusHistories.AddAsync(history);
+    }
 
     private static OrderManagementResponseDto MapToResponse(Order order)
     {
@@ -553,7 +608,17 @@ public class OrderManagementService : IOrderManagementService
                 Quantity      = oi.Quantity,
                 UnitPrice     = oi.UnitPrice,
                 Subtotal      = oi.Subtotal
-            }).ToList() ?? new()
+            }).ToList() ?? new(),
+            StatusHistory = order.StatusHistory?.Select(sh => new OrderStatusHistoryResponseDto
+            {
+                Id = sh.Id,
+                OrderId = sh.OrderId,
+                OldStatus = sh.OldStatus,
+                NewStatus = sh.NewStatus,
+                ChangedBy = sh.ChangedBy,
+                Remarks = sh.Remarks,
+                CreatedAt = sh.CreatedAt
+            }).OrderBy(sh => sh.CreatedAt).ToList() ?? new()
         };
     }
 }
