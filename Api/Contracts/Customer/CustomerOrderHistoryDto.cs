@@ -7,6 +7,7 @@ public class CustomerOrderHistoryDto
     public DateTime CreatedAt { get; set; }
     public string OrderStatus { get; set; } = string.Empty;
     public string PaymentStatus { get; set; } = string.Empty;
+    public string PaymentMethod { get; set; } = string.Empty;
     public decimal TotalAmount { get; set; }
     public List<CustomerOrderHistoryItemDto> Items { get; set; } = new();
 }

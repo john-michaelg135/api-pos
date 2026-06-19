@@ -64,4 +64,43 @@ public class XenditService : IXenditService
             throw;
         }
     }
+
+    public async Task<string?> GetInvoiceStatusByOrderNumberAsync(string orderNumber)
+    {
+        try
+        {
+            var client = _httpClientFactory.CreateClient("XenditClient");
+            // Xendit API: GET /v2/invoices?external_id={orderNumber}
+            var response = await client.GetAsync($"v2/invoices?external_id={Uri.EscapeDataString(orderNumber)}");
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Xendit invoice lookup failed for order {OrderNumber}. Status: {Status}", orderNumber, response.StatusCode);
+                return null;
+            }
+
+            var body = await response.Content.ReadAsStringAsync();
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+
+            // Response is an array
+            if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                foreach (var inv in doc.RootElement.EnumerateArray())
+                {
+                    if (inv.TryGetProperty("status", out var statusEl))
+                        return statusEl.GetString();
+                }
+            }
+            else if (doc.RootElement.TryGetProperty("status", out var statusEl))
+            {
+                return statusEl.GetString();
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching Xendit invoice status for order {OrderNumber}", orderNumber);
+            return null;
+        }
+    }
 }

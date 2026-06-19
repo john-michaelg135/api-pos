@@ -116,18 +116,6 @@ public class OrderEntryController : ControllerBase
         }
     }
 
-    // ── POS-009: Pre-order flag ──
-
-    // PUT api-pos/order-entry/orders/{orderId}/preorder
-    [HttpPut("orders/{orderId:int}/preorder")]
-    [ProducesResponseType(typeof(OrderResponseDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> TogglePreorder(int orderId, [FromQuery] bool isPreorder = true)
-    {
-        var order = await _orderEntryService.SetPreorderAsync(orderId, isPreorder);
-        if (order == null) return NotFound($"Order with ID {orderId} not found.");
-        return Ok(order);
-    }
 
     // GET api-pos/order-entry/orders
     [HttpGet("orders")]

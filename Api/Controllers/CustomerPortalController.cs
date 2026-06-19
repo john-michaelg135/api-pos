@@ -72,4 +72,48 @@ public class CustomerPortalController : ControllerBase
         if (tracking == null) return NotFound("Order not found or does not belong to this customer.");
         return Ok(tracking);
     }
+
+    // EC-023: Request a refund for a delivered order
+    // POST /api-pos/customers/orders/{orderId}/refund
+    [HttpPost("orders/{orderId:int}/refund")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> RequestRefund(int orderId, [FromBody] RefundRequestDto dto)
+    {
+        var (authId, customerId) = GetCustomerIdentity();
+        if (authId == null && customerId == null)
+            return Unauthorized("Customer identity not found in request headers.");
+
+        var result = authId != null
+            ? await _customerPortalService.RequestRefundByAuthIdAsync(orderId, authId, dto.Reason)
+            : await _customerPortalService.RequestRefundAsync(orderId, customerId!.Value, dto.Reason);
+
+        return result.Success ? Ok(new { message = result.Message }) : BadRequest(new { message = result.Message });
+    }
+
+    // EC-024: Get all refund requests for the current customer
+    // GET /api-pos/customers/refunds
+    [HttpGet("refunds")]
+    [ProducesResponseType(typeof(List<CustomerRefundRequestDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> GetRefunds()
+    {
+        var (authId, customerId) = GetCustomerIdentity();
+
+        if (authId != null)
+        {
+            var refunds = await _customerPortalService.GetRefundRequestsByAuthIdAsync(authId);
+            return Ok(refunds);
+        }
+
+        if (customerId != null)
+        {
+            var refunds = await _customerPortalService.GetRefundRequestsAsync(customerId.Value);
+            return Ok(refunds);
+        }
+
+        return Unauthorized("Customer identity not found in request headers.");
+    }
 }

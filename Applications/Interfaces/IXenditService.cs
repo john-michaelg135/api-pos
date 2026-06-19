@@ -13,4 +13,11 @@ public interface IXenditService
         string description,
         string? successRedirectUrl = null,
         string? failureRedirectUrl = null);
+
+    /// <summary>
+    /// Retrieves the Xendit invoice by external_id (order number) and returns its status string (e.g. "PAID", "PENDING").
+    /// Returns null if not found or if the request fails.
+    /// </summary>
+    Task<string?> GetInvoiceStatusByOrderNumberAsync(string orderNumber);
 }
+

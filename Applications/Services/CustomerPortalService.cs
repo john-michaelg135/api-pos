@@ -52,6 +52,7 @@ public class CustomerPortalService : ICustomerPortalService
             CreatedAt = o.CreatedAt,
             OrderStatus = o.OrderStatus,
             PaymentStatus = o.PaymentStatus,
+            PaymentMethod = o.PaymentMethod ?? string.Empty,
             TotalAmount = o.TotalAmount,
             Items = o.OrderItems.Select(oi => new CustomerOrderHistoryItemDto
             {
@@ -103,4 +104,115 @@ public class CustomerPortalService : ICustomerPortalService
             LastUpdatedAt = order.UpdatedAt
         };
     }
+
+    public async Task<RefundResult> RequestRefundAsync(int orderId, int customerId, string reason)
+    {
+        var order = await _db.Orders.Include(o => o.OrderItems).FirstOrDefaultAsync(o => o.OrderId == orderId && o.CustomerId == customerId);
+        return await ProcessRefund(order, reason);
+    }
+
+    public async Task<RefundResult> RequestRefundByAuthIdAsync(int orderId, string customerAuthId, string reason)
+    {
+        var order = await _db.Orders.Include(o => o.OrderItems).FirstOrDefaultAsync(o => o.OrderId == orderId && o.CustomerAuthId == customerAuthId);
+        return await ProcessRefund(order, reason);
+    }
+
+    private async Task<RefundResult> ProcessRefund(Order? order, string reason)
+    {
+        if (order == null)
+            return RefundResult.Fail("Order not found.");
+
+        if (string.IsNullOrWhiteSpace(reason))
+            return RefundResult.Fail("A refund reason is required.");
+
+        var status = order.OrderStatus.ToLower();
+        bool isDelivered = status.Contains("delivered") || status.Contains("completed");
+        if (!isDelivered)
+            return RefundResult.Fail("Refunds can only be requested for delivered orders.");
+
+        bool isCOD = string.Equals(order.PaymentMethod, "COD", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(order.PaymentMethod, "Cash on Delivery", StringComparison.OrdinalIgnoreCase);
+        bool isOnlinePaid = !isCOD && string.Equals(order.PaymentStatus, "Paid", StringComparison.OrdinalIgnoreCase);
+
+        if (!isCOD && !isOnlinePaid)
+            return RefundResult.Fail("Only paid or COD orders that have been delivered are eligible for a refund.");
+
+        if (string.Equals(order.OrderStatus, "Refund Requested", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(order.OrderStatus, "Refunded", StringComparison.OrdinalIgnoreCase))
+            return RefundResult.Fail("A refund request has already been submitted for this order.");
+
+        order.OrderStatus = "Refund Requested";
+        order.UpdatedAt = DateTime.UtcNow;
+        _db.Orders.Update(order);
+
+        foreach (var item in order.OrderItems)
+        {
+            var refundRequest = new RefundRequest
+            {
+                OrderId = order.OrderId,
+                VariationId = item.VariationId,
+                LocationId = order.LocationId ?? 1, // Fallback if no location
+                QuantityToReturn = item.Quantity,
+                Reason = reason,
+                Status = "Pending",
+                RequestedBy = order.CustomerId ?? 0, // Customer initiated
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+            await _db.RefundRequests.AddAsync(refundRequest);
+        }
+
+        await _db.SaveChangesAsync();
+
+        return RefundResult.Ok("Your refund request has been submitted successfully.");
+    }
+
+    public async Task<List<CustomerRefundRequestDto>> GetRefundRequestsAsync(int customerId)
+    {
+        var refunds = await _db.RefundRequests
+            .AsNoTracking()
+            .Include(r => r.Variation)
+                .ThenInclude(v => v!.Product)
+            .Join(_db.Orders,
+                r => r.OrderId,
+                o => o.OrderId,
+                (r, o) => new { Refund = r, Order = o })
+            .Where(x => x.Order.CustomerId == customerId)
+            .OrderByDescending(x => x.Refund.CreatedAt)
+            .ToListAsync();
+
+        return refunds.Select(x => MapRefund(x.Refund, x.Order)).ToList();
+    }
+
+    public async Task<List<CustomerRefundRequestDto>> GetRefundRequestsByAuthIdAsync(string customerAuthId)
+    {
+        var refunds = await _db.RefundRequests
+            .AsNoTracking()
+            .Include(r => r.Variation)
+                .ThenInclude(v => v!.Product)
+            .Join(_db.Orders,
+                r => r.OrderId,
+                o => o.OrderId,
+                (r, o) => new { Refund = r, Order = o })
+            .Where(x => x.Order.CustomerAuthId == customerAuthId)
+            .OrderByDescending(x => x.Refund.CreatedAt)
+            .ToListAsync();
+
+        return refunds.Select(x => MapRefund(x.Refund, x.Order)).ToList();
+    }
+
+    private static CustomerRefundRequestDto MapRefund(RefundRequest r, Order o) => new()
+    {
+        RefundRequestId = r.RefundRequestId,
+        OrderId = o.OrderId,
+        OrderNumber = o.OrderNumber,
+        ProductName = r.Variation?.Product?.ProductName ?? "Unknown Product",
+        VariationName = r.Variation?.VariationName ?? "Unknown Variation",
+        QuantityToReturn = r.QuantityToReturn,
+        TotalAmount = o.TotalAmount,
+        PaymentMethod = o.PaymentMethod,
+        Reason = r.Reason,
+        Status = r.Status,
+        CreatedAt = r.CreatedAt
+    };
 }

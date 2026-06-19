@@ -3,6 +3,7 @@ using Api.Contracts.OrderEntry;
 using Infrastructures.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Domains.Entities;
+using Applications.Interfaces;
 
 namespace Api.Controllers;
 
@@ -12,11 +13,13 @@ public class XenditWebhookController : ControllerBase
 {
     private readonly PosDbContext _db;
     private readonly ILogger<XenditWebhookController> _logger;
+    private readonly IXenditService _xenditService;
 
-    public XenditWebhookController(PosDbContext db, ILogger<XenditWebhookController> logger)
+    public XenditWebhookController(PosDbContext db, ILogger<XenditWebhookController> logger, IXenditService xenditService)
     {
         _db = db;
         _logger = logger;
+        _xenditService = xenditService;
     }
 
     [HttpPost("invoice-paid")]
@@ -49,6 +52,13 @@ public class XenditWebhookController : ControllerBase
             {
                 _logger.LogWarning("Order with number {OrderNumber} not found for Xendit webhook callback", callback.ExternalId);
                 return NotFound($"Order {callback.ExternalId} not found.");
+            }
+
+            if (string.Equals(order.PaymentMethod, "COD", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(order.PaymentMethod, "Cash on Delivery", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning("Received Xendit PAID webhook for order {OrderNumber}, but order is COD. Ignoring.", callback.ExternalId);
+                return Ok();
             }
 
             // Find if there's already a pending payment record
@@ -105,6 +115,78 @@ public class XenditWebhookController : ControllerBase
         }
 
         return Ok();
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // EC-022: Confirm payment after Xendit redirect (local-dev / webhook fallback)
+    // Called by the frontend success page to pull live invoice status from Xendit
+    // and mark the order as Paid if Xendit confirms the payment.
+    // POST /api-pos/webhooks/xendit/confirm-payment?orderNumber={orderNumber}
+    // ──────────────────────────────────────────────────────────────────
+    [HttpPost("confirm-payment")]
+    public async Task<IActionResult> ConfirmPayment([FromQuery] string orderNumber)
+    {
+        if (string.IsNullOrWhiteSpace(orderNumber))
+            return BadRequest("orderNumber query parameter is required.");
+
+        var order = await _db.Orders
+            .Include(o => o.Payments)
+            .FirstOrDefaultAsync(o => o.OrderNumber == orderNumber);
+
+        if (order == null)
+            return NotFound($"Order {orderNumber} not found.");
+
+        // If it's a COD order, it is paid on delivery, not via Xendit.
+        if (string.Equals(order.PaymentMethod, "COD", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(order.PaymentMethod, "Cash on Delivery", StringComparison.OrdinalIgnoreCase))
+        {
+            return Ok(new { confirmed = false, reason = "COD orders are paid on delivery." });
+        }
+
+        // Already marked paid — nothing to do
+        if (string.Equals(order.PaymentStatus, "Paid", StringComparison.OrdinalIgnoreCase))
+            return Ok(new { confirmed = true, alreadyPaid = true });
+
+        var status = await _xenditService.GetInvoiceStatusByOrderNumberAsync(orderNumber);
+        _logger.LogInformation("ConfirmPayment: Xendit status for order {OrderNumber} is {Status}", orderNumber, status ?? "null");
+
+        if (!string.Equals(status, "PAID", StringComparison.OrdinalIgnoreCase))
+            return Ok(new { confirmed = false, xenditStatus = status });
+
+        var pendingPayment = order.Payments
+            .FirstOrDefault(p => p.PaymentStatus == "Pending");
+
+        if (pendingPayment != null)
+        {
+            pendingPayment.PaymentStatus = "Paid";
+            pendingPayment.PaidAt = DateTime.UtcNow;
+            _db.Payments.Update(pendingPayment);
+        }
+        else
+        {
+            await _db.Payments.AddAsync(new Payment
+            {
+                OrderId       = order.OrderId,
+                AmountPaid    = order.TotalAmount,
+                PaymentChannel = "Xendit",
+                PaymentStatus = "Paid",
+                PaidAt        = DateTime.UtcNow
+            });
+        }
+
+        order.PaymentStatus = "Paid";
+        if (string.Equals(order.OrderStatus, "Pending", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(order.OrderStatus, "Awaiting Stock", StringComparison.OrdinalIgnoreCase))
+        {
+            order.OrderStatus = "Processing";
+        }
+        order.UpdatedAt = DateTime.UtcNow;
+
+        _db.Orders.Update(order);
+        await _db.SaveChangesAsync();
+
+        _logger.LogInformation("ConfirmPayment: Order {OrderNumber} marked as Paid via frontend confirm.", orderNumber);
+        return Ok(new { confirmed = true, xenditStatus = status });
     }
 
     // ──────────────────────────────────────────────────────────────────

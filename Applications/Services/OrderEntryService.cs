@@ -299,15 +299,25 @@ public class OrderEntryService : IOrderEntryService
     private async Task<string> GenerateOrderNumberAsync(DateTime date)
     {
         var datePrefix = date.ToString("yyyyMMdd");
-        var pattern = $"ORD-{datePrefix}-%";
+        var prefix = $"ORD-{datePrefix}-";
 
-        // Count existing orders for today to get the next sequence number
-        var todayOrderCount = await _db.Orders
-            .Where(o => o.OrderNumber.StartsWith($"ORD-{datePrefix}-"))
-            .CountAsync();
+        var lastOrder = await _db.Orders
+            .Where(o => o.OrderNumber.StartsWith(prefix))
+            .OrderByDescending(o => o.OrderNumber)
+            .FirstOrDefaultAsync();
 
-        var sequence = (todayOrderCount + 1).ToString("D4");
-        return $"ORD-{datePrefix}-{sequence}";
+        int nextSequence = 1;
+        if (lastOrder != null)
+        {
+            var parts = lastOrder.OrderNumber.Split('-');
+            if (parts.Length == 3 && int.TryParse(parts[2], out int lastSequence))
+            {
+                nextSequence = lastSequence + 1;
+            }
+        }
+
+        var sequence = nextSequence.ToString("D4");
+        return $"{prefix}{sequence}";
     }
 
     // ────────────────────────────────────────────────────
@@ -452,23 +462,6 @@ public class OrderEntryService : IOrderEntryService
         return (await BuildOrderResponse(order.OrderId))!;
     }
 
-    // ────────────────────────────────────────────────────
-    // POS-009: Pre-order flag toggle
-    // ────────────────────────────────────────────────────
-
-    public async Task<OrderResponseDto?> SetPreorderAsync(int orderId, bool isPreorder)
-    {
-        var order = await _db.Orders.FindAsync(orderId);
-        if (order == null) return null;
-
-        order.IsPreorder = isPreorder;
-        order.UpdatedAt = DateTime.UtcNow;
-
-        _db.Orders.Update(order);
-        await _db.SaveChangesAsync();
-
-        return await BuildOrderResponse(orderId);
-    }
 
     // ────────────────────────────────────────────────────
     // EC-008 / EC-019: Ecommerce order submission
@@ -554,9 +547,11 @@ public class OrderEntryService : IOrderEntryService
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
 
-        var isGcashOrCod = string.Equals(dto.PaymentMethod, "GCash", StringComparison.OrdinalIgnoreCase) ||
-                           string.Equals(dto.PaymentMethod, "COD", StringComparison.OrdinalIgnoreCase);
-        if (isGcashOrCod)
+        // Only create a Xendit invoice for online payment methods (e.g. GCash, PayMaya).
+        // COD orders are paid on arrival — they never go through Xendit.
+        var isOnlinePayment = !string.Equals(dto.PaymentMethod, "COD", StringComparison.OrdinalIgnoreCase) &&
+                              !string.Equals(dto.PaymentMethod, "Cash on Delivery", StringComparison.OrdinalIgnoreCase);
+        if (isOnlinePayment)
         {
             try
             {
@@ -576,7 +571,7 @@ public class OrderEntryService : IOrderEntryService
                 {
                     OrderId = order.OrderId,
                     AmountPaid = order.TotalAmount,
-                    PaymentChannel = "GCash",
+                    PaymentChannel = dto.PaymentMethod,
                     PaymentStatus = "Pending",
                     GatewayReferenceNumber = paymentUrl,
                     PaidAt = now

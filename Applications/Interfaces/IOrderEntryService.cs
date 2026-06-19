@@ -18,8 +18,6 @@ public interface IOrderEntryService
     // POS-008: Institutional order creation
     Task<OrderResponseDto> CreateInstitutionalOrderAsync(CreateInstitutionalOrderDto dto);
 
-    // POS-009: Pre-order flag toggle
-    Task<OrderResponseDto?> SetPreorderAsync(int orderId, bool isPreorder);
 
     // EC-008: Ecommerce order submission
     Task<OrderResponseDto> CreateEcommerceOrderAsync(CreateEcommerceOrderDto dto);
