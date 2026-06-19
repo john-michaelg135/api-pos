@@ -194,4 +194,23 @@ public class OrderManagementController : ControllerBase
             return BadRequest(ex.Message);
         }
     }
+
+    [HttpGet("sync-refunds")]
+    public async Task<IActionResult> SyncRefunds([FromServices] Infrastructures.Persistence.PosDbContext db)
+    {
+        var refundedOrders = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.ToListAsync(
+            db.Orders.Where(o => o.OrderStatus == "Refunded").Select(o => o.OrderId));
+        
+        var requests = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.ToListAsync(
+            db.RefundRequests.Where(r => refundedOrders.Contains(r.OrderId) && r.Status == "Pending"));
+            
+        foreach (var req in requests)
+        {
+            req.Status = "Approved";
+            req.ApprovedAt = DateTime.UtcNow;
+            db.RefundRequests.Update(req);
+        }
+        await db.SaveChangesAsync();
+        return Ok($"Updated {requests.Count} refund requests.");
+    }
 }

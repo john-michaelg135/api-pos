@@ -164,7 +164,8 @@ public class OrderManagementService : IOrderManagementService
         if (currentUser?.SubRole == "Cashier")
         {
             var locationId = currentUser.LocationId ?? 0;
-            query = query.Where(o => o.LocationId == locationId);
+            query = query.Where(o => o.LocationId == locationId || 
+                (o.OrderSource == "Ecommerce" && (o.OrderStatus == "Refund Requested" || o.OrderStatus == "Refunded")));
         }
         else
         {
@@ -435,7 +436,7 @@ public class OrderManagementService : IOrderManagementService
         if (order == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && (order.LocationId != currentUser.LocationId || order.OrderSource == "Ecommerce"))
+        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
             throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
 
         if (order.OrderStatus != "Completed" && order.PaymentStatus != "Paid")
@@ -467,7 +468,7 @@ public class OrderManagementService : IOrderManagementService
         if (order == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && (order.LocationId != currentUser.LocationId || order.OrderSource == "Ecommerce"))
+        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
             throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
 
         if (order.OrderStatus != "Refund Requested")
@@ -481,6 +482,17 @@ public class OrderManagementService : IOrderManagementService
 
         await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Refunded", approvedBy, "Refund approved");
         _db.Orders.Update(order);
+
+        var refundRequests = await _db.RefundRequests.Where(r => r.OrderId == orderId).ToListAsync();
+        foreach (var req in refundRequests)
+        {
+            req.Status = "Approved";
+            req.ApprovedBy = approvedBy;
+            req.ApprovedAt = DateTime.UtcNow;
+            req.UpdatedAt = DateTime.UtcNow;
+            _db.RefundRequests.Update(req);
+        }
+
         await _db.SaveChangesAsync();
 
         // POS-017: Auto restore stock per item
@@ -515,7 +527,7 @@ public class OrderManagementService : IOrderManagementService
         if (order == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && (order.LocationId != currentUser.LocationId || order.OrderSource == "Ecommerce"))
+        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
             throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
 
         if (order.OrderStatus != "Refund Requested")
@@ -530,6 +542,16 @@ public class OrderManagementService : IOrderManagementService
 
         await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Completed", rejectedBy, $"Refund rejected: {reason}");
         _db.Orders.Update(order);
+
+        var refundRequests = await _db.RefundRequests.Where(r => r.OrderId == orderId).ToListAsync();
+        foreach (var req in refundRequests)
+        {
+            req.Status = "Rejected";
+            req.ApprovedBy = rejectedBy; 
+            req.UpdatedAt = DateTime.UtcNow;
+            _db.RefundRequests.Update(req);
+        }
+
         await _db.SaveChangesAsync();
 
         return MapToResponse(order);

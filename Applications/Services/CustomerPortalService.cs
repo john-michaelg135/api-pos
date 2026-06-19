@@ -142,6 +142,7 @@ public class CustomerPortalService : ICustomerPortalService
             return RefundResult.Fail("A refund request has already been submitted for this order.");
 
         order.OrderStatus = "Refund Requested";
+        order.RejectionRemarks = reason;
         order.UpdatedAt = DateTime.UtcNow;
         _db.Orders.Update(order);
 
