@@ -60,6 +60,28 @@ public class RefundController : ControllerBase
         }
     }
 
+    // PUT api-pos/refunds/{id}/reject
+    [HttpPut("{id:int}/reject")]
+    [ProducesResponseType(typeof(RefundResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> RejectRefund(int id, [FromBody] ApproveRefundDto dto)
+    {
+        if (dto == null) return BadRequest("Rejection data is required.");
+
+        try
+        {
+            var refund = await _refundService.RejectRefundAsync(id, dto);
+            if (refund == null) return NotFound($"Refund request with ID {id} not found.");
+            return Ok(refund);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
+
+
     // ── Supporting: List all refund requests for manager review ──
 
     // GET api-pos/refunds

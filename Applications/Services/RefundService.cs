@@ -136,6 +136,49 @@ public class RefundService : IRefundService
     }
 
     // ────────────────────────────────────────────────────
+    // Reject refund — logs manager and sets status to Rejected
+    // ────────────────────────────────────────────────────
+
+    public async Task<RefundResponseDto?> RejectRefundAsync(int refundRequestId, ApproveRefundDto dto)
+    {
+        var refund = await _db.RefundRequests.FindAsync(refundRequestId);
+        if (refund == null) return null;
+
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier" && refund.LocationId != currentUser.LocationId)
+        {
+            throw new InvalidOperationException("You are not authorized to reject refunds for other locations.");
+        }
+
+        if (refund.Status != "Pending")
+            throw new InvalidOperationException($"Refund #{refundRequestId} is already '{refund.Status}'. Only Pending refunds can be rejected.");
+
+        var now = DateTime.UtcNow;
+
+        refund.Status     = "Rejected";
+        refund.ApprovedBy = dto.ApprovedBy;
+        refund.ApprovedAt = now;
+        refund.UpdatedAt  = now;
+
+        _db.RefundRequests.Update(refund);
+        await _db.SaveChangesAsync();
+
+        var response = MapToResponse(refund);
+
+        _auditLogService.Log(
+            action: "Update",
+            entity: "RefundRequest",
+            entityId: refund.RefundRequestId,
+            before: new { Status = "Pending" },
+            after: new { Status = "Rejected", ApprovedBy = dto.ApprovedBy },
+            performedBy: null
+        );
+
+        return response;
+    }
+
+
+    // ────────────────────────────────────────────────────
     // Supporting: List all refund requests
     // ────────────────────────────────────────────────────
 
