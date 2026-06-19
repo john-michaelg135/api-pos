@@ -3,6 +3,7 @@ using System;
 using Infrastructures.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace api_pos.Migrations
 {
     [DbContext(typeof(PosDbContext))]
-    partial class PosDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260618155617_AddSeniorPwdOrderDetails")]
+    partial class AddSeniorPwdOrderDetails
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -265,45 +268,6 @@ namespace api_pos.Migrations
                     b.HasIndex("VariationId");
 
                     b.ToTable("OrderItems");
-                });
-
-            modelBuilder.Entity("Domains.Entities.OrderStatusHistory", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<int?>("ChangedBy")
-                        .HasColumnType("integer");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-                    b.Property<string>("NewStatus")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
-
-                    b.Property<string>("OldStatus")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
-
-                    b.Property<int>("OrderId")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("Remarks")
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("OrderId");
-
-                    b.ToTable("OrderStatusHistories");
                 });
 
             modelBuilder.Entity("Domains.Entities.Payment", b =>
@@ -793,17 +757,6 @@ namespace api_pos.Migrations
                     b.Navigation("ProductVariation");
                 });
 
-            modelBuilder.Entity("Domains.Entities.OrderStatusHistory", b =>
-                {
-                    b.HasOne("Domains.Entities.Order", "Order")
-                        .WithMany("StatusHistory")
-                        .HasForeignKey("OrderId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Order");
-                });
-
             modelBuilder.Entity("Domains.Entities.Payment", b =>
                 {
                     b.HasOne("Domains.Entities.Order", "Order")
@@ -937,8 +890,6 @@ namespace api_pos.Migrations
                     b.Navigation("OrderItems");
 
                     b.Navigation("Payments");
-
-                    b.Navigation("StatusHistory");
                 });
 
             modelBuilder.Entity("Domains.Entities.Product", b =>

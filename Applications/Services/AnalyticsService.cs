@@ -23,7 +23,7 @@ public class AnalyticsService : IAnalyticsService
     {
         var query = _db.Orders
             .AsNoTracking()
-            .Where(o => o.OrderStatus == "Completed")
+            .Where(o => o.OrderStatus == "Completed" || o.OrderStatus == "Refund Requested")
             .AsQueryable();
 
         query = ApplyCommonFilters(query, filter);
@@ -62,7 +62,7 @@ public class AnalyticsService : IAnalyticsService
     {
         var query = _db.Orders
             .AsNoTracking()
-            .Where(o => o.OrderStatus == "Completed")
+            .Where(o => o.OrderStatus == "Completed" || o.OrderStatus == "Refund Requested")
             .AsQueryable();
 
         query = ApplyCommonFilters(query, filter);
@@ -93,7 +93,7 @@ public class AnalyticsService : IAnalyticsService
     {
         var query = _db.Orders
             .AsNoTracking()
-            .Where(o => o.OrderStatus == "Completed")
+            .Where(o => o.OrderStatus == "Completed" || o.OrderStatus == "Refund Requested")
             .AsQueryable();
 
         query = ApplyCommonFilters(query, filter);
@@ -126,7 +126,7 @@ public class AnalyticsService : IAnalyticsService
     {
         var query = _db.Orders
             .AsNoTracking()
-            .Where(o => o.OrderStatus == "Completed")
+            .Where(o => o.OrderStatus == "Completed" || o.OrderStatus == "Refund Requested")
             .AsQueryable();
 
         query = ApplyCommonFilters(query, filter);

@@ -51,6 +51,14 @@ public class XenditWebhookController : ControllerBase
             if (order == null)
             {
                 _logger.LogWarning("Order with number {OrderNumber} not found for Xendit webhook callback", callback.ExternalId);
+                
+                // Allow Xendit's "Test and save" webhook verification to pass
+                if (callback.ExternalId.StartsWith("invoice_", StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation("Xendit webhook dashboard verification test succeeded.");
+                    return Ok(new { message = "Webhook test endpoint verified successfully." });
+                }
+
                 return NotFound($"Order {callback.ExternalId} not found.");
             }
 
@@ -87,6 +95,7 @@ public class XenditWebhookController : ControllerBase
                 await _db.Payments.AddAsync(payment);
             }
 
+            var oldStatus = order.OrderStatus;
             order.PaymentStatus = "Paid";
             if (string.Equals(order.OrderSource, "POS", StringComparison.OrdinalIgnoreCase))
             {
@@ -109,6 +118,21 @@ public class XenditWebhookController : ControllerBase
             order.UpdatedAt = DateTime.UtcNow;
 
             _db.Orders.Update(order);
+
+            if (order.OrderStatus != oldStatus)
+            {
+                var history = new OrderStatusHistory
+                {
+                    OrderId = order.OrderId,
+                    OldStatus = oldStatus,
+                    NewStatus = order.OrderStatus,
+                    ChangedBy = 0, // System/Xendit callback
+                    Remarks = $"Payment callback from Xendit. Ref: {callback.PaymentId ?? callback.Id}",
+                    CreatedAt = DateTime.UtcNow
+                };
+                await _db.OrderStatusHistories.AddAsync(history);
+            }
+
             await _db.SaveChangesAsync();
 
             _logger.LogInformation("Order {OrderNumber} marked as Paid and {Status} via Xendit webhook", callback.ExternalId, order.OrderStatus);
