@@ -553,9 +553,10 @@ public class OrderEntryService : IOrderEntryService
             if (activePrice == null)
                 throw new InvalidOperationException($"No active price found for variation ID {cartItem.VariationId}");
 
+            var basePrice = cartItem.Price ?? activePrice.Price;
             var finalPrice = dto.ApplyPwdDiscount
-                ? Math.Round((activePrice.Price / 1.12m) * 0.80m, 2)
-                : activePrice.Price;
+                ? Math.Round((basePrice / 1.12m) * 0.80m, 2)
+                : basePrice;
 
             var subtotal = finalPrice * cartItem.Quantity;
             totalAmount += subtotal;

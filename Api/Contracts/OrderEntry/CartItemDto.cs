@@ -8,4 +8,6 @@ public class CartItemDto
     
     [Range(1, 10000)]
     public int Quantity { get; set; }
+
+    public decimal? Price { get; set; }
 }
