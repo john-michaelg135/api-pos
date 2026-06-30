@@ -134,6 +134,8 @@ public class OrderEntryService : IOrderEntryService
             PaymentStatus = isGcash ? "Pending" : "Paid",
             OrderStatus = isGcash ? "Pending" : "Completed",
             TotalAmount = 0,              // Will be calculated below
+            AmountTendered = dto.AmountTendered,
+            ChangeAmount = dto.ChangeAmount,
             CreatedAt = now,
             UpdatedAt = now,
             ContactPerson = dto.ContactPerson,
@@ -664,6 +666,8 @@ public class OrderEntryService : IOrderEntryService
             LocationName = order.Location?.LocationName,
             LocationId = order.LocationId,
             TotalAmount = order.TotalAmount,
+            AmountTendered = order.AmountTendered,
+            ChangeAmount = order.ChangeAmount,
             OrderStatus = order.OrderStatus,
             PaymentMethod = order.PaymentMethod,
             PaymentStatus = order.PaymentStatus,

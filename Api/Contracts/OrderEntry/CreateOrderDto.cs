@@ -11,6 +11,8 @@ public class CreateOrderDto
     
     // Sprint 2 Pricing Controls
     public bool ApplyPwdDiscount { get; set; } = false;
+    public decimal? AmountTendered { get; set; }
+    public decimal? ChangeAmount { get; set; }
     public List<CartItemDto> Items { get; set; } = new();
 
     // Customer / PWD Details

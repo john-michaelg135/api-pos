@@ -36,6 +36,8 @@ public class Order
     
     public string OrderStatus { get; set; } = "Pending";   // Pending, Processing, etc.
     public decimal TotalAmount { get; set; }
+    public decimal? AmountTendered { get; set; }
+    public decimal? ChangeAmount { get; set; }
 
     public int? SubmittedBy { get; set; }    // FK to users (in auth_db, stored as plain int)
     public int? ApprovedBy { get; set; }     // FK to users (in auth_db, stored as plain int)

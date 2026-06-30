@@ -13,6 +13,8 @@ public class OrderManagementResponseDto
     public string PaymentMethod { get; set; } = string.Empty;
     public string PaymentStatus { get; set; } = string.Empty;
     public decimal TotalAmount { get; set; }
+    public decimal? AmountTendered { get; set; }
+    public decimal? ChangeAmount { get; set; }
     public int? CustomerId { get; set; }
     public int? LocationId { get; set; }
     public string? LocationName { get; set; }

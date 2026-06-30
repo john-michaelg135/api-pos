@@ -11,6 +11,8 @@ public class OrderResponseDto
     public string? LocationName { get; set; }
     public int? LocationId { get; set; }
     public decimal TotalAmount { get; set; }
+    public decimal? AmountTendered { get; set; }
+    public decimal? ChangeAmount { get; set; }
 
     public string OrderStatus { get; set; } = string.Empty;
     public string PaymentMethod { get; set; } = string.Empty;

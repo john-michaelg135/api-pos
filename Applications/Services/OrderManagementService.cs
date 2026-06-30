@@ -64,8 +64,11 @@ public class OrderManagementService : IOrderManagementService
         if (order == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && (order.LocationId != currentUser.LocationId || order.OrderSource == "Ecommerce"))
-            throw new InvalidOperationException("You are not authorized to approve this order.");
+        if ((currentUser?.SubRole == "Cashier" || currentUser?.SubRole == "OrderManager") && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId)
+            throw new InvalidOperationException("You are not authorized to approve this order for another location.");
+        
+        if (currentUser?.SubRole == "Cashier" && order.OrderSource == "Ecommerce")
+            throw new InvalidOperationException("Cashiers are not authorized to approve ecommerce orders.");
 
         if (order.OrderStatus != "Pending" && order.OrderStatus != "Awaiting Stock")
             throw new InvalidOperationException($"Order {order.OrderNumber} is already {order.OrderStatus}. Only Pending or Awaiting Stock orders can be approved.");
@@ -113,8 +116,11 @@ public class OrderManagementService : IOrderManagementService
         if (order == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && (order.LocationId != currentUser.LocationId || order.OrderSource == "Ecommerce"))
-            throw new InvalidOperationException("You are not authorized to reject this order.");
+        if ((currentUser?.SubRole == "Cashier" || currentUser?.SubRole == "OrderManager") && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId)
+            throw new InvalidOperationException("You are not authorized to reject this order for another location.");
+
+        if (currentUser?.SubRole == "Cashier" && order.OrderSource == "Ecommerce")
+            throw new InvalidOperationException("Cashiers are not authorized to reject ecommerce orders.");
 
         if (order.OrderStatus != "Pending" && order.OrderStatus != "Awaiting Stock")
             throw new InvalidOperationException($"Order {order.OrderNumber} is already {order.OrderStatus}. Only Pending or Awaiting Stock orders can be rejected.");
@@ -161,11 +167,11 @@ public class OrderManagementService : IOrderManagementService
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         var query = _db.Orders.AsQueryable();
 
-        if (currentUser?.SubRole == "Cashier")
+        if (currentUser?.SubRole == "Cashier" || (currentUser?.SubRole == "OrderManager" && currentUser.LocationId.HasValue))
         {
             var locationId = currentUser.LocationId ?? 0;
             query = query.Where(o => o.LocationId == locationId || 
-                (o.OrderSource == "Ecommerce" && (o.OrderStatus == "Refund Requested" || o.OrderStatus == "Refunded")));
+                (currentUser.SubRole == "Cashier" && o.OrderSource == "Ecommerce" && (o.OrderStatus == "Refund Requested" || o.OrderStatus == "Refunded")));
         }
         else
         {
@@ -218,8 +224,11 @@ public class OrderManagementService : IOrderManagementService
         if (order == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && (order.LocationId != currentUser.LocationId || order.OrderSource == "Ecommerce"))
-            throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
+        if ((currentUser?.SubRole == "Cashier" || currentUser?.SubRole == "OrderManager") && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId)
+            throw new InvalidOperationException("You are not authorized to perform this action for other locations.");
+            
+        if (currentUser?.SubRole == "Cashier" && order.OrderSource == "Ecommerce")
+            throw new InvalidOperationException("Cashiers are not authorized to confirm delivery for ecommerce orders.");
 
         if (order.PaymentMethod != "COD")
             throw new InvalidOperationException($"Only COD orders can be confirmed via delivery. This order uses {order.PaymentMethod}.");
@@ -286,6 +295,11 @@ public class OrderManagementService : IOrderManagementService
         if (currentUser?.SubRole == "Cashier" || (currentUser != null && currentUser.SubRole != "Admin" && currentUser.SubRole != "OrderManager" && currentUser.Username != "posuser"))
         {
             throw new InvalidOperationException("Only Order Managers and Admins are authorized to update the status of ecommerce orders.");
+        }
+
+        if (currentUser?.SubRole == "OrderManager" && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId)
+        {
+            throw new InvalidOperationException("You are not authorized to update orders for another location.");
         }
 
         var targetStatus = dto.Status.Trim();
@@ -587,6 +601,8 @@ public class OrderManagementService : IOrderManagementService
             PaymentMethod         = order.PaymentMethod,
             PaymentStatus         = order.PaymentStatus,
             TotalAmount           = order.TotalAmount,
+            AmountTendered        = order.AmountTendered,
+            ChangeAmount          = order.ChangeAmount,
             CustomerId            = order.CustomerId,
             LocationId            = order.LocationId,
             LocationName          = order.Location?.LocationName,

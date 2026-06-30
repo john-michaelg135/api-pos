@@ -126,6 +126,8 @@ public class PosDbContext : DbContext
             entity.Property(e => e.PaymentStatus).IsRequired().HasMaxLength(20);
             entity.Property(e => e.OrderStatus).IsRequired().HasMaxLength(30);
             entity.Property(e => e.TotalAmount).IsRequired().HasColumnType("numeric(12,2)");
+            entity.Property(e => e.AmountTendered).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.ChangeAmount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.RejectionRemarks).HasColumnType("text");
             entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
             entity.Property(e => e.UpdatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
