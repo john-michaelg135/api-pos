@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Applications.Interfaces;
 using Api.Contracts.Inventory;
+using Api.Middlewares;
 
 namespace Api.Controllers;
 
@@ -20,6 +21,7 @@ public class InventoryController : ControllerBase
 
     // POST api-pos/inventory/stock-receiving
     [HttpPost("stock-receiving")]
+    [RateLimit(WindowSeconds = 5, MaxRequests = 1, Message = "Stock receiving is already being recorded. Please wait a moment.")]
     [ProducesResponseType(typeof(StockResponseDto), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> ReceiveStock([FromBody] StockReceivingDto dto)

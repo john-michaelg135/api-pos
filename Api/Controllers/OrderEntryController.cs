@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Applications.Interfaces;
 using Api.Contracts.OrderEntry;
+using Api.Middlewares;
 
 namespace Api.Controllers;
 
@@ -31,6 +32,7 @@ public class OrderEntryController : ControllerBase
 
     // POST api-pos/order-entry/orders
     [HttpPost("orders")]
+    [RateLimit(WindowSeconds = 5, MaxRequests = 1, Message = "Order is already being processed. Please wait a few seconds before submitting again.")]
     [ProducesResponseType(typeof(OrderResponseDto), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> CreateOrder([FromBody] CreateOrderDto dto)
@@ -53,6 +55,7 @@ public class OrderEntryController : ControllerBase
 
     // PUT api-pos/order-entry/orders/{orderId}/confirm
     [HttpPut("orders/{orderId:int}/confirm")]
+    [RateLimit(WindowSeconds = 5, MaxRequests = 1, Message = "This order is already being confirmed. Please wait a moment.")]
     [ProducesResponseType(typeof(OrderResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -75,6 +78,7 @@ public class OrderEntryController : ControllerBase
 
     // POST api-pos/order-entry/orders/institutional
     [HttpPost("orders/institutional")]
+    [RateLimit(WindowSeconds = 5, MaxRequests = 1, Message = "Order is already being processed. Please wait a few seconds before submitting again.")]
     [ProducesResponseType(typeof(OrderResponseDto), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> CreateInstitutionalOrder([FromBody] CreateInstitutionalOrderDto dto)
@@ -98,6 +102,7 @@ public class OrderEntryController : ControllerBase
 
     // POST api-pos/order-entry/orders/ecommerce
     [HttpPost("orders/ecommerce")]
+    [RateLimit(WindowSeconds = 8, MaxRequests = 1, Message = "Your order is already being placed. Please wait a moment — avoid clicking Place Order twice.")]
     [ProducesResponseType(typeof(OrderResponseDto), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> CreateEcommerceOrder([FromBody] CreateEcommerceOrderDto dto)

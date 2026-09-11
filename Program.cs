@@ -151,6 +151,11 @@ app.UseCors("AllowFrontend");
 // Toggle with AUTH_MIDDLEWARE_ENABLED=true/false
 app.UseMiddleware<AuthValidationMiddleware>();
 
+// Rate limiting — placed after auth so the authenticated user identity is available.
+// Blocks duplicate submissions (double-clicked checkout, spammed refund/approve, etc.)
+// on endpoints marked with [RateLimit]. Toggle with RATE_LIMIT_ENABLED=true/false.
+app.UseMiddleware<RateLimitingMiddleware>();
+
 app.UseAuthorization();
 
 app.MapControllers();
