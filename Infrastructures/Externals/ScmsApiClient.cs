@@ -40,8 +40,9 @@ public class ScmsApiClient
     /// <summary>
     /// Updates the status of a specific stock transfer on the SCMS backend.
     /// PUT {SCMS_API_BASE_URL}/api/StockTransfers/{transferId}/status
+    /// Transfer ids are strings end-to-end (e.g. "trans_001"); SCM adheres to this contract.
     /// </summary>
-    public async Task UpdateTransferStatusAsync(int transferId, string status)
+    public async Task UpdateTransferStatusAsync(string transferId, string status)
     {
         try
         {

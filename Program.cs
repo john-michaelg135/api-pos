@@ -50,6 +50,8 @@ builder.Services.AddScoped<IAnalyticsService, AnalyticsService>();
 builder.Services.AddScoped<IRefundService, RefundService>();
 builder.Services.AddScoped<IStockAdjustmentService, StockAdjustmentService>();
 builder.Services.AddScoped<IScmsIntegrationService, ScmsIntegrationService>();
+builder.Services.AddScoped<IReconciliationService, ReconciliationService>(); // POS↔SCM reconciliation
+builder.Services.AddHostedService<ReconciliationSweepBackgroundService>(); // auto-retry failed SCM status callbacks
 builder.Services.AddScoped<ICrmsQueryService, CrmsQueryService>();
 
 builder.Services.AddScoped<IXenditService, XenditService>();

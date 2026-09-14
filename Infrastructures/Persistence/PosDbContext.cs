@@ -37,7 +37,11 @@ public class PosDbContext : DbContext
             entity.HasKey(e => e.VariationId);
             entity.Property(e => e.VariationId).UseIdentityByDefaultColumn();
             entity.Property(e => e.VariationName).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.Sku).HasMaxLength(100);
             entity.Property(e => e.IsActive).IsRequired().HasDefaultValue(true);
+
+            // Reconciliation: SKU should be unique when present (filtered unique index).
+            entity.HasIndex(e => e.Sku).IsUnique().HasFilter("\"Sku\" IS NOT NULL");
 
             entity.HasMany(e => e.ProductPrices)
                 .WithOne(p => p.ProductVariation)
@@ -259,6 +263,8 @@ public class PosDbContext : DbContext
             entity.Property(e => e.QuantityReceived).IsRequired();
             entity.Property(e => e.Notes).HasColumnType("text");
             entity.Property(e => e.ReceivedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.Property(e => e.TransferId).HasMaxLength(50);
+            entity.HasIndex(e => e.TransferId);
             // ReceivedBy references users in auth_db — stored as plain int, no FK constraint
 
             entity.HasOne(e => e.Variation)
@@ -281,7 +287,9 @@ public class PosDbContext : DbContext
             entity.Property(e => e.DestinationBranchId).HasMaxLength(50);
             entity.Property(e => e.DestinationBranchName).HasMaxLength(100);
             entity.Property(e => e.Status).IsRequired().HasMaxLength(30);
-            
+            entity.Property(e => e.StatusSyncState).IsRequired().HasMaxLength(20).HasDefaultValue("Pending");
+            entity.Property(e => e.ReconciliationState).IsRequired().HasMaxLength(20).HasDefaultValue("Unreconciled");
+
             entity.HasMany(e => e.Items)
                 .WithOne(i => i.Transfer)
                 .HasForeignKey(i => i.TransferId)
@@ -293,6 +301,7 @@ public class PosDbContext : DbContext
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Id).UseIdentityByDefaultColumn();
             entity.Property(e => e.ProductId).HasMaxLength(50);
+            entity.Property(e => e.Sku).HasMaxLength(100);
             entity.Property(e => e.ProductName).HasMaxLength(150);
             entity.Property(e => e.Quantity).IsRequired();
         });

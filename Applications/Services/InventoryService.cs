@@ -44,7 +44,7 @@ private readonly IAuditLogService _auditLogService;
         if (location == null)
             throw new InvalidOperationException($"Location with ID {dto.LocationId} not found.");
 
-        // Record the receiving event
+        // Record the receiving event (link to the SCM transfer for reconciliation)
         var receiving = new StockReceiving
         {
             VariationId = dto.VariationId,
@@ -52,7 +52,8 @@ private readonly IAuditLogService _auditLogService;
             QuantityReceived = dto.QuantityReceived,
             Notes = dto.Notes,
             ReceivedBy = dto.ReceivedBy,
-            ReceivedAt = DateTime.UtcNow
+            ReceivedAt = DateTime.UtcNow,
+            TransferId = dto.TransferId?.ToString()
         };
 
         await _db.StockReceivings.AddAsync(receiving);
@@ -88,14 +89,45 @@ private readonly IAuditLogService _auditLogService;
 
         if (dto.TransferId.HasValue)
         {
+            // Reconciliation bookkeeping: stamp receipt on the linked transfer + its matched line.
+            var transferId = dto.TransferId.Value.ToString();
+            var transfer = await _db.StockTransfers
+                .Include(t => t.Items)
+                .FirstOrDefaultAsync(t => t.TransferId == transferId);
+
+            if (transfer != null)
+            {
+                transfer.ReceivedAt = now;
+
+                // Record the received quantity against the matched line (by resolved variation,
+                // falling back to the first not-yet-received line for this variation).
+                var line = transfer.Items.FirstOrDefault(i => i.ResolvedVariationId == dto.VariationId)
+                    ?? transfer.Items.FirstOrDefault(i => i.ReceivedQuantity == null);
+                if (line != null)
+                {
+                    line.ResolvedVariationId = dto.VariationId;
+                    line.ReceivedQuantity = (line.ReceivedQuantity ?? 0) + dto.QuantityReceived;
+                }
+            }
+
             try
             {
-                await _scmsClient.UpdateTransferStatusAsync(dto.TransferId.Value, "Completed");
+                await _scmsClient.UpdateTransferStatusAsync(transferId, "Completed");
+                if (transfer != null)
+                {
+                    transfer.StatusSyncState = "Acknowledged";
+                    transfer.StatusSyncedAt = DateTime.UtcNow;
+                }
             }
             catch (System.Exception ex)
             {
+                // Best-effort: POS stock is already updated. Mark the callback failed so
+                // reconciliation can detect and re-attempt it later.
+                if (transfer != null) transfer.StatusSyncState = "Failed";
                 System.Console.WriteLine($"Error updating SCM transfer status for Transfer {dto.TransferId}: {ex.Message}");
             }
+
+            if (transfer != null) await _db.SaveChangesAsync();
         }
 
         var response = new StockResponseDto
