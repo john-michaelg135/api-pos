@@ -1,0 +1,65 @@
+# Render Blueprint for api-pos (.NET 10 API)
+# Deploy: push this repo to GitHub, then in Render → New → Blueprint, pick this repo.
+# Values marked `sync: false` are NOT in Git — set them in the Render dashboard.
+services:
+  - type: web
+    name: api-pos
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile.prod
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+
+      # ── PostgreSQL (Neon / Supabase) ──
+      # Fill these from your Neon connection details.
+      - key: POSTGRES_DB_HOST
+        sync: false
+      - key: POSTGRES_DB_PORT
+        value: "5432"
+      - key: POSTGRES_USERNAME
+        sync: false
+      - key: POSTGRES_PASSWORD
+        sync: false
+      # api-pos hardcodes Database=pos_db in its connection string. Create a
+      # database named pos_db on Neon (or rename to match).
+
+      # Run EF migrations + seed on boot (safe to leave true for first deploy).
+      - key: RUN_DB_MIGRATIONS
+        value: "true"
+
+      # ── Auth (owned by another team) ──
+      # AUTH_MIDDLEWARE_ENABLED=false → API accepts calls without validating tokens
+      # (demo mode). Flip to true once you have the auth service's validate-token URL.
+      - key: AUTH_MIDDLEWARE_ENABLED
+        value: "false"
+      - key: AUTH_SERVICE_URL
+        sync: false
+
+      # ── SCMS integration (owned by another team; optional for POS demo) ──
+      - key: SCMS_API_BASE_URL
+        sync: false
+
+      # ── Audit logs (optional) ──
+      - key: AUDIT_SERVICE_ENABLED
+        value: "false"
+      - key: AUDIT_SERVICE_URL
+        sync: false
+
+      # ── Xendit payments (set your dev keys) ──
+      - key: XENDIT_SECRET_KEY
+        sync: false
+      - key: XENDIT_PUBLIC_KEY
+        sync: false
+      - key: XENDIT_CALLBACK_TOKEN
+        sync: false
+      # Point this at your deployed web-pos sales page once known.
+      - key: XENDIT_REDIRECT_URL
+        sync: false
+
+      # ── Rate limiting ──
+      - key: RATE_LIMIT_ENABLED
+        value: "true"
