@@ -98,6 +98,26 @@ public class PosDbContext : DbContext
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
+        // ── PosUserLocation (br-auth user → location assignment) ──
+        modelBuilder.Entity<PosUserLocation>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).UseIdentityByDefaultColumn();
+            entity.Property(e => e.AuthUserId).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.IsPrimary).IsRequired().HasDefaultValue(false);
+            entity.Property(e => e.AssignedBy).HasMaxLength(100);
+            entity.Property(e => e.AssignedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            // A user can be assigned to a location at most once.
+            entity.HasIndex(e => new { e.AuthUserId, e.LocationId }).IsUnique();
+            entity.HasIndex(e => e.AuthUserId);
+
+            entity.HasOne(e => e.Location)
+                .WithMany()
+                .HasForeignKey(e => e.LocationId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
         // ── Order ──
         modelBuilder.Entity<Order>(entity =>
         {
@@ -327,6 +347,7 @@ public class PosDbContext : DbContext
     public DbSet<ProductPrice> ProductPrices { get; set; }
     public DbSet<PriceHistory> PriceHistories { get; set; }
     public DbSet<Location> Locations { get; set; }
+    public DbSet<PosUserLocation> PosUserLocations { get; set; }
     public DbSet<Order> Orders { get; set; }
     public DbSet<OrderItem> OrderItems { get; set; }
     public DbSet<Payment> Payments { get; set; }
