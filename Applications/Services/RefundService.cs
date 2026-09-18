@@ -13,12 +13,16 @@ public class RefundService : IRefundService
     private readonly PosDbContext _db;
     private readonly IInventoryService _inventoryService;
     private readonly IHttpContextAccessor _httpContextAccessor;
+    private readonly IRefundNotificationService _refundNotificationService;
+    private readonly IAuditLogService _auditLogService;
 
-    public RefundService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor)
+    public RefundService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor, IRefundNotificationService refundNotificationService, IAuditLogService auditLogService)
     {
         _db = db;
         _inventoryService = inventoryService;
         _httpContextAccessor = httpContextAccessor;
+        _refundNotificationService = refundNotificationService;
+        _auditLogService = auditLogService;
     }
 
     // ────────────────────────────────────────────────────
@@ -68,7 +72,18 @@ public class RefundService : IRefundService
         await _db.RefundRequests.AddAsync(refund);
         await _db.SaveChangesAsync();
 
-        return MapToResponse(refund);
+        var response = MapToResponse(refund);
+
+        _auditLogService.Log(
+            action: "Create",
+            entity: "RefundRequest",
+            entityId: refund.RefundRequestId,
+            before: null,
+            after: response,
+            performedBy: null
+        );
+
+        return response;
     }
 
     // ────────────────────────────────────────────────────
@@ -103,8 +118,65 @@ public class RefundService : IRefundService
         _db.RefundRequests.Update(refund);
         await _db.SaveChangesAsync();
 
-        return MapToResponse(refund);
+        var response = MapToResponse(refund);
+        
+        // US-POS-025: Push live notification to cashiers at that location
+        _ = _refundNotificationService.NotifyRefundApprovedAsync(refund.LocationId, response);
+
+        _auditLogService.Log(
+            action: "Update",
+            entity: "RefundRequest",
+            entityId: refund.RefundRequestId,
+            before: new { Status = "Pending" },
+            after: new { Status = "Approved", ApprovedBy = dto.ApprovedBy },
+            performedBy: null
+        );
+
+        return response;
     }
+
+    // ────────────────────────────────────────────────────
+    // Reject refund — logs manager and sets status to Rejected
+    // ────────────────────────────────────────────────────
+
+    public async Task<RefundResponseDto?> RejectRefundAsync(int refundRequestId, ApproveRefundDto dto)
+    {
+        var refund = await _db.RefundRequests.FindAsync(refundRequestId);
+        if (refund == null) return null;
+
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier" && refund.LocationId != currentUser.LocationId)
+        {
+            throw new InvalidOperationException("You are not authorized to reject refunds for other locations.");
+        }
+
+        if (refund.Status != "Pending")
+            throw new InvalidOperationException($"Refund #{refundRequestId} is already '{refund.Status}'. Only Pending refunds can be rejected.");
+
+        var now = DateTime.UtcNow;
+
+        refund.Status     = "Rejected";
+        refund.ApprovedBy = dto.ApprovedBy;
+        refund.ApprovedAt = now;
+        refund.UpdatedAt  = now;
+
+        _db.RefundRequests.Update(refund);
+        await _db.SaveChangesAsync();
+
+        var response = MapToResponse(refund);
+
+        _auditLogService.Log(
+            action: "Update",
+            entity: "RefundRequest",
+            entityId: refund.RefundRequestId,
+            before: new { Status = "Pending" },
+            after: new { Status = "Rejected", ApprovedBy = dto.ApprovedBy },
+            performedBy: null
+        );
+
+        return response;
+    }
+
 
     // ────────────────────────────────────────────────────
     // Supporting: List all refund requests

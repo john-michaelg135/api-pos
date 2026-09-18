@@ -13,8 +13,8 @@ public class OrderManagementResponseDto
     public string PaymentMethod { get; set; } = string.Empty;
     public string PaymentStatus { get; set; } = string.Empty;
     public decimal TotalAmount { get; set; }
-    public string? AppliedVoucherCode { get; set; }
-    public decimal? VoucherDiscountAmount { get; set; }
+    public decimal? AmountTendered { get; set; }
+    public decimal? ChangeAmount { get; set; }
     public int? CustomerId { get; set; }
     public int? LocationId { get; set; }
     public string? LocationName { get; set; }
@@ -29,6 +29,16 @@ public class OrderManagementResponseDto
     public string? ContactPerson { get; set; }
     public bool IsPreorder { get; set; }
     public string? CustomVariationNotes { get; set; }
+
+    // Dedicated Senior/PWD Fields
+    public string? SeniorPwdId { get; set; }
+    public string? SeniorPwdName { get; set; }
+    public string? SeniorPwdStreet { get; set; }
+    public string? SeniorPwdBarangay { get; set; }
+    public string? SeniorPwdCity { get; set; }
+    public string? SeniorPwdProvince { get; set; }
+    public string? SeniorPwdZipCode { get; set; }
+
     public int? SubmittedBy { get; set; }
     public int? ApprovedBy { get; set; }
     public DateTime? ApprovedAt { get; set; }
@@ -37,4 +47,5 @@ public class OrderManagementResponseDto
     public DateTime UpdatedAt { get; set; }
     public List<PaymentResponseDto> Payments { get; set; } = new();
     public List<OrderItemResponseDto> Items { get; set; } = new();
+    public List<OrderStatusHistoryResponseDto> StatusHistory { get; set; } = new();
 }

@@ -7,4 +7,5 @@ public class StockReceivingDto
     public int QuantityReceived { get; set; }
     public string? Notes { get; set; }
     public int? ReceivedBy { get; set; }
+    public int? TransferId { get; set; }
 }

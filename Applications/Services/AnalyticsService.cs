@@ -2,16 +2,20 @@ using Api.Contracts.Analytics;
 using Applications.Interfaces;
 using Infrastructures.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Http;
+using Api.Middlewares;
 
 namespace Applications.Services;
 
 public class AnalyticsService : IAnalyticsService
 {
     private readonly PosDbContext _db;
+    private readonly IHttpContextAccessor _httpContextAccessor;
 
-    public AnalyticsService(PosDbContext db)
+    public AnalyticsService(PosDbContext db, IHttpContextAccessor httpContextAccessor)
     {
         _db = db;
+        _httpContextAccessor = httpContextAccessor;
     }
 
     // ────────────────────────────────────────────────────
@@ -23,7 +27,7 @@ public class AnalyticsService : IAnalyticsService
     {
         var query = _db.Orders
             .AsNoTracking()
-            .Where(o => o.OrderStatus == "Completed")
+            .Where(o => o.OrderStatus == "Completed" || o.OrderStatus == "Refund Requested")
             .AsQueryable();
 
         query = ApplyCommonFilters(query, filter);
@@ -62,7 +66,7 @@ public class AnalyticsService : IAnalyticsService
     {
         var query = _db.Orders
             .AsNoTracking()
-            .Where(o => o.OrderStatus == "Completed")
+            .Where(o => o.OrderStatus == "Completed" || o.OrderStatus == "Refund Requested")
             .AsQueryable();
 
         query = ApplyCommonFilters(query, filter);
@@ -93,7 +97,7 @@ public class AnalyticsService : IAnalyticsService
     {
         var query = _db.Orders
             .AsNoTracking()
-            .Where(o => o.OrderStatus == "Completed")
+            .Where(o => o.OrderStatus == "Completed" || o.OrderStatus == "Refund Requested")
             .AsQueryable();
 
         query = ApplyCommonFilters(query, filter);
@@ -126,7 +130,7 @@ public class AnalyticsService : IAnalyticsService
     {
         var query = _db.Orders
             .AsNoTracking()
-            .Where(o => o.OrderStatus == "Completed")
+            .Where(o => o.OrderStatus == "Completed" || o.OrderStatus == "Refund Requested")
             .AsQueryable();
 
         query = ApplyCommonFilters(query, filter);
@@ -152,18 +156,27 @@ public class AnalyticsService : IAnalyticsService
     // Private helpers
     // ────────────────────────────────────────────────────
 
-    private static IQueryable<Domains.Entities.Order> ApplyCommonFilters(
+    private IQueryable<Domains.Entities.Order> ApplyCommonFilters(
         IQueryable<Domains.Entities.Order> query,
         AnalyticsFilterDto filter)
     {
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        
+        if (currentUser?.SubRole == "Cashier" || (currentUser?.SubRole == "OrderManager" && currentUser.LocationId.HasValue))
+        {
+            var locationId = currentUser.LocationId ?? 0;
+            query = query.Where(o => o.LocationId == locationId);
+        }
+        else if (filter.LocationId.HasValue)
+        {
+            query = query.Where(o => o.LocationId == filter.LocationId.Value);
+        }
+
         if (filter.DateFrom.HasValue)
             query = query.Where(o => o.CreatedAt >= filter.DateFrom.Value);
 
         if (filter.DateTo.HasValue)
             query = query.Where(o => o.CreatedAt <= filter.DateTo.Value);
-
-        if (filter.LocationId.HasValue)
-            query = query.Where(o => o.LocationId == filter.LocationId.Value);
 
         if (!string.IsNullOrWhiteSpace(filter.OrderType))
             query = query.Where(o => o.OrderType == filter.OrderType);

@@ -14,6 +14,9 @@ public interface IOrderManagementService
 
     // POS-015: COD auto-mark paid on delivery confirm
     Task<OrderManagementResponseDto?> ConfirmDeliveryAsync(int orderId, int confirmedBy);
+    
+    // Generic order status update (Order Manager only)
+    Task<OrderManagementResponseDto?> UpdateOrderStatusAsync(int orderId, UpdateOrderStatusDto dto);
 
     // EC-012: Order progress tracking
     Task<OrderTrackingDto?> GetOrderTrackingAsync(int orderId);

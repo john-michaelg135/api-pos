@@ -97,14 +97,17 @@ namespace api_pos.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("OrderId"));
 
-                    b.Property<string>("AppliedVoucherCode")
-                        .HasColumnType("text");
+                    b.Property<decimal?>("AmountTendered")
+                        .HasColumnType("numeric(12,2)");
 
                     b.Property<DateTime?>("ApprovedAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<int?>("ApprovedBy")
                         .HasColumnType("integer");
+
+                    b.Property<decimal?>("ChangeAmount")
+                        .HasColumnType("numeric(12,2)");
 
                     b.Property<string>("ContactPerson")
                         .HasMaxLength(150)
@@ -116,6 +119,9 @@ namespace api_pos.Migrations
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
                     b.Property<string>("CustomVariationNotes")
+                        .HasColumnType("text");
+
+                    b.Property<string>("CustomerAuthId")
                         .HasColumnType("text");
 
                     b.Property<int?>("CustomerId")
@@ -181,6 +187,34 @@ namespace api_pos.Migrations
                     b.Property<string>("RejectionRemarks")
                         .HasColumnType("text");
 
+                    b.Property<string>("SeniorPwdBarangay")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("SeniorPwdCity")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("SeniorPwdId")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<string>("SeniorPwdName")
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)");
+
+                    b.Property<string>("SeniorPwdProvince")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("SeniorPwdStreet")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<string>("SeniorPwdZipCode")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
                     b.Property<int?>("SubmittedBy")
                         .HasColumnType("integer");
 
@@ -191,9 +225,6 @@ namespace api_pos.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
                         .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-                    b.Property<decimal?>("VoucherDiscountAmount")
-                        .HasColumnType("numeric");
 
                     b.HasKey("OrderId");
 
@@ -240,6 +271,45 @@ namespace api_pos.Migrations
                     b.HasIndex("VariationId");
 
                     b.ToTable("OrderItems");
+                });
+
+            modelBuilder.Entity("Domains.Entities.OrderStatusHistory", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("ChangedBy")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<string>("NewStatus")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("OldStatus")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<int>("OrderId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Remarks")
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrderId");
+
+                    b.ToTable("OrderStatusHistories");
                 });
 
             modelBuilder.Entity("Domains.Entities.Payment", b =>
@@ -414,6 +484,10 @@ namespace api_pos.Migrations
                     b.Property<int>("ProductId")
                         .HasColumnType("integer");
 
+                    b.Property<string>("Sku")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
                     b.Property<DateTime?>("SyncedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -425,6 +499,10 @@ namespace api_pos.Migrations
                     b.HasKey("VariationId");
 
                     b.HasIndex("ProductId");
+
+                    b.HasIndex("Sku")
+                        .IsUnique()
+                        .HasFilter("\"Sku\" IS NOT NULL");
 
                     b.ToTable("ProductVariations");
                 });
@@ -606,6 +684,10 @@ namespace api_pos.Migrations
                     b.Property<int?>("ReceivedBy")
                         .HasColumnType("integer");
 
+                    b.Property<string>("TransferId")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
                     b.Property<int>("VariationId")
                         .HasColumnType("integer");
 
@@ -613,56 +695,118 @@ namespace api_pos.Migrations
 
                     b.HasIndex("LocationId");
 
+                    b.HasIndex("TransferId");
+
                     b.HasIndex("VariationId");
 
                     b.ToTable("StockReceivings");
                 });
 
-            modelBuilder.Entity("Domains.Entities.Voucher", b =>
+            modelBuilder.Entity("Domains.Entities.StockTransfer", b =>
                 {
-                    b.Property<int>("VoucherId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
+                    b.Property<string>("TransferId")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
 
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("VoucherId"));
-
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-                    b.Property<string>("DiscountType")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)");
-
-                    b.Property<decimal>("DiscountValue")
-                        .HasColumnType("numeric(12,2)");
-
-                    b.Property<DateTime>("ExpiryDate")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<bool>("IsActive")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(true);
-
-                    b.Property<decimal>("MinimumSpend")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("numeric(12,2)")
-                        .HasDefaultValue(0m);
-
-                    b.Property<string>("VoucherCode")
+                    b.Property<string>("DestinationBranchId")
                         .IsRequired()
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)");
 
-                    b.HasKey("VoucherId");
+                    b.Property<string>("DestinationBranchName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
 
-                    b.HasIndex("VoucherCode")
-                        .IsUnique();
+                    b.Property<DateTime?>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone");
 
-                    b.ToTable("Vouchers");
+                    b.Property<DateTime?>("ReconciledAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ReconciliationState")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("Unreconciled");
+
+                    b.Property<string>("SourceLocationId")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("SourceLocationName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<string>("StatusSyncState")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("Pending");
+
+                    b.Property<DateTime?>("StatusSyncedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("TransferDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("TransferId");
+
+                    b.ToTable("StockTransfers");
+                });
+
+            modelBuilder.Entity("Domains.Entities.StockTransferItem", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("DamagedQuantity")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ProductId")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("ProductName")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)");
+
+                    b.Property<int>("Quantity")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("ReceivedQuantity")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("ResolvedVariationId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Sku")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("TransferId")
+                        .IsRequired()
+                        .HasColumnType("character varying(50)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TransferId");
+
+                    b.ToTable("StockTransferItems");
                 });
 
             modelBuilder.Entity("Domains.Entities.CartItem", b =>
@@ -703,6 +847,17 @@ namespace api_pos.Migrations
                     b.Navigation("Order");
 
                     b.Navigation("ProductVariation");
+                });
+
+            modelBuilder.Entity("Domains.Entities.OrderStatusHistory", b =>
+                {
+                    b.HasOne("Domains.Entities.Order", "Order")
+                        .WithMany("StatusHistory")
+                        .HasForeignKey("OrderId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Order");
                 });
 
             modelBuilder.Entity("Domains.Entities.Payment", b =>
@@ -817,6 +972,17 @@ namespace api_pos.Migrations
                     b.Navigation("Variation");
                 });
 
+            modelBuilder.Entity("Domains.Entities.StockTransferItem", b =>
+                {
+                    b.HasOne("Domains.Entities.StockTransfer", "Transfer")
+                        .WithMany("Items")
+                        .HasForeignKey("TransferId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Transfer");
+                });
+
             modelBuilder.Entity("Domains.Entities.Location", b =>
                 {
                     b.Navigation("Orders");
@@ -827,6 +993,8 @@ namespace api_pos.Migrations
                     b.Navigation("OrderItems");
 
                     b.Navigation("Payments");
+
+                    b.Navigation("StatusHistory");
                 });
 
             modelBuilder.Entity("Domains.Entities.Product", b =>
@@ -841,6 +1009,11 @@ namespace api_pos.Migrations
                     b.Navigation("PriceHistories");
 
                     b.Navigation("ProductPrices");
+                });
+
+            modelBuilder.Entity("Domains.Entities.StockTransfer", b =>
+                {
+                    b.Navigation("Items");
                 });
 #pragma warning restore 612, 618
         }

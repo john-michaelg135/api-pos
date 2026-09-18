@@ -37,7 +37,11 @@ public class PosDbContext : DbContext
             entity.HasKey(e => e.VariationId);
             entity.Property(e => e.VariationId).UseIdentityByDefaultColumn();
             entity.Property(e => e.VariationName).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.Sku).HasMaxLength(100);
             entity.Property(e => e.IsActive).IsRequired().HasDefaultValue(true);
+
+            // Reconciliation: SKU should be unique when present (filtered unique index).
+            entity.HasIndex(e => e.Sku).IsUnique().HasFilter("\"Sku\" IS NOT NULL");
 
             entity.HasMany(e => e.ProductPrices)
                 .WithOne(p => p.ProductVariation)
@@ -113,10 +117,21 @@ public class PosDbContext : DbContext
             entity.Property(e => e.ContactPerson).HasMaxLength(150);
             entity.Property(e => e.IsPreorder).IsRequired().HasDefaultValue(false);
             entity.Property(e => e.CustomVariationNotes).HasColumnType("text");
+
+            // Dedicated Senior/PWD Fields Configuration
+            entity.Property(e => e.SeniorPwdId).HasMaxLength(30);
+            entity.Property(e => e.SeniorPwdName).HasMaxLength(150);
+            entity.Property(e => e.SeniorPwdStreet).HasMaxLength(255);
+            entity.Property(e => e.SeniorPwdBarangay).HasMaxLength(100);
+            entity.Property(e => e.SeniorPwdCity).HasMaxLength(100);
+            entity.Property(e => e.SeniorPwdProvince).HasMaxLength(100);
+            entity.Property(e => e.SeniorPwdZipCode).HasMaxLength(20);
             entity.Property(e => e.PaymentMethod).IsRequired().HasMaxLength(20);
             entity.Property(e => e.PaymentStatus).IsRequired().HasMaxLength(20);
             entity.Property(e => e.OrderStatus).IsRequired().HasMaxLength(30);
             entity.Property(e => e.TotalAmount).IsRequired().HasColumnType("numeric(12,2)");
+            entity.Property(e => e.AmountTendered).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.ChangeAmount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.RejectionRemarks).HasColumnType("text");
             entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
             entity.Property(e => e.UpdatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
@@ -145,22 +160,6 @@ public class PosDbContext : DbContext
             entity.Property(e => e.GatewayReferenceNumber).HasMaxLength(100);
             entity.Property(e => e.PaymentStatus).IsRequired().HasMaxLength(30);
             entity.Property(e => e.PaidAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
-        });
-
-        // ── Voucher ──
-        modelBuilder.Entity<Voucher>(entity =>
-        {
-            entity.HasKey(e => e.VoucherId);
-            entity.Property(e => e.VoucherId).UseIdentityByDefaultColumn();
-            entity.Property(e => e.VoucherCode).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.DiscountType).IsRequired().HasMaxLength(20);
-            entity.Property(e => e.DiscountValue).IsRequired().HasColumnType("numeric(12,2)");
-            entity.Property(e => e.MinimumSpend).IsRequired().HasColumnType("numeric(12,2)").HasDefaultValue(0);
-            entity.Property(e => e.IsActive).IsRequired().HasDefaultValue(true);
-            entity.Property(e => e.ExpiryDate).IsRequired();
-            entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
-            
-            entity.HasIndex(e => e.VoucherCode).IsUnique();
         });
 
         // ── OrderItem ──
@@ -264,6 +263,8 @@ public class PosDbContext : DbContext
             entity.Property(e => e.QuantityReceived).IsRequired();
             entity.Property(e => e.Notes).HasColumnType("text");
             entity.Property(e => e.ReceivedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.Property(e => e.TransferId).HasMaxLength(50);
+            entity.HasIndex(e => e.TransferId);
             // ReceivedBy references users in auth_db — stored as plain int, no FK constraint
 
             entity.HasOne(e => e.Variation)
@@ -276,6 +277,49 @@ public class PosDbContext : DbContext
                 .HasForeignKey(e => e.LocationId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
+        // ── StockTransfer (Integration with SCMS) ──
+        modelBuilder.Entity<StockTransfer>(entity =>
+        {
+            entity.HasKey(e => e.TransferId);
+            entity.Property(e => e.TransferId).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.SourceLocationId).HasMaxLength(50);
+            entity.Property(e => e.SourceLocationName).HasMaxLength(100);
+            entity.Property(e => e.DestinationBranchId).HasMaxLength(50);
+            entity.Property(e => e.DestinationBranchName).HasMaxLength(100);
+            entity.Property(e => e.Status).IsRequired().HasMaxLength(30);
+            entity.Property(e => e.StatusSyncState).IsRequired().HasMaxLength(20).HasDefaultValue("Pending");
+            entity.Property(e => e.ReconciliationState).IsRequired().HasMaxLength(20).HasDefaultValue("Unreconciled");
+
+            entity.HasMany(e => e.Items)
+                .WithOne(i => i.Transfer)
+                .HasForeignKey(i => i.TransferId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<StockTransferItem>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).UseIdentityByDefaultColumn();
+            entity.Property(e => e.ProductId).HasMaxLength(50);
+            entity.Property(e => e.Sku).HasMaxLength(100);
+            entity.Property(e => e.ProductName).HasMaxLength(150);
+            entity.Property(e => e.Quantity).IsRequired();
+        });
+
+        modelBuilder.Entity<OrderStatusHistory>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).UseIdentityByDefaultColumn();
+            entity.Property(e => e.OldStatus).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.NewStatus).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.Remarks).HasColumnType("text");
+            entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.HasOne(e => e.Order)
+                .WithMany(o => o.StatusHistory)
+                .HasForeignKey(e => e.OrderId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
     }
 
     public DbSet<Product> Products { get; set; }
@@ -286,12 +330,14 @@ public class PosDbContext : DbContext
     public DbSet<Order> Orders { get; set; }
     public DbSet<OrderItem> OrderItems { get; set; }
     public DbSet<Payment> Payments { get; set; }
-    public DbSet<Voucher> Vouchers { get; set; }
     public DbSet<Stock> Stocks { get; set; }
     public DbSet<StockReceiving> StockReceivings { get; set; }
+    public DbSet<StockTransfer> StockTransfers { get; set; }
+    public DbSet<StockTransferItem> StockTransferItems { get; set; }
 
     // Sprint 3
     public DbSet<RefundRequest> RefundRequests { get; set; }
     public DbSet<StockAdjustment> StockAdjustments { get; set; }
     public DbSet<CartItem> CartItems { get; set; }
+    public DbSet<OrderStatusHistory> OrderStatusHistories { get; set; }
 }

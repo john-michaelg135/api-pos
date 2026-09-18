@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Applications.Interfaces;
 using Api.Contracts.StockAdjustment;
+using Api.Middlewares;
 
 namespace Api.Controllers;
 
@@ -20,6 +21,7 @@ public class StockAdjustmentController : ControllerBase
 
     // POST api-pos/inventory/adjustments
     [HttpPost]
+    [RateLimit(WindowSeconds = 5, MaxRequests = 1, Message = "Adjustment is already being submitted. Please wait a moment.")]
     [ProducesResponseType(typeof(StockAdjustmentResponseDto), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> SubmitAdjustment([FromBody] CreateStockAdjustmentDto dto)
@@ -41,6 +43,7 @@ public class StockAdjustmentController : ControllerBase
 
     // PUT api-pos/inventory/adjustments/{id}/approve
     [HttpPut("{id:int}/approve")]
+    [RateLimit(WindowSeconds = 5, MaxRequests = 1, Message = "This adjustment is already being approved. Please wait a moment.")]
     [ProducesResponseType(typeof(StockAdjustmentResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]

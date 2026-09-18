@@ -59,9 +59,6 @@ public class CrmsQueryService : ICrmsQueryService
         if (filter.OrderId.HasValue)
             query = query.Where(o => o.OrderId == filter.OrderId.Value);
 
-        if (!string.IsNullOrWhiteSpace(filter.VoucherCode))
-            query = query.Where(o => o.AppliedVoucherCode == filter.VoucherCode);
-
         if (filter.ProductId.HasValue)
             query = query.Where(o => o.OrderItems.Any(
                 oi => oi.ProductVariation.ProductId == filter.ProductId.Value));
@@ -105,8 +102,6 @@ public class CrmsQueryService : ICrmsQueryService
                     Pricing = new CrmsOrderPricingDto
                     {
                         SubtotalAmount       = orderSubtotal,
-                        VoucherCode          = order.AppliedVoucherCode,
-                        VoucherDiscountAmount = order.VoucherDiscountAmount,
                         TotalAmount          = order.TotalAmount
                     },
 
@@ -156,8 +151,6 @@ public class CrmsQueryService : ICrmsQueryService
             Pricing = new CrmsOrderPricingDto
             {
                 SubtotalAmount        = subtotal,
-                VoucherCode           = order.AppliedVoucherCode,
-                VoucherDiscountAmount  = order.VoucherDiscountAmount,
                 TotalAmount           = order.TotalAmount
             },
 

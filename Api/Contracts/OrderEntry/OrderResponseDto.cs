@@ -11,14 +11,13 @@ public class OrderResponseDto
     public string? LocationName { get; set; }
     public int? LocationId { get; set; }
     public decimal TotalAmount { get; set; }
-    
-    // Sprint 2 Discount Auditing Fields
-    public string? AppliedVoucherCode { get; set; }
-    public decimal? VoucherDiscountAmount { get; set; }
+    public decimal? AmountTendered { get; set; }
+    public decimal? ChangeAmount { get; set; }
 
     public string OrderStatus { get; set; } = string.Empty;
     public string PaymentMethod { get; set; } = string.Empty;
     public string PaymentStatus { get; set; } = string.Empty;
+    public string? PaymentUrl { get; set; }
     public DateTime CreatedAt { get; set; }
     public List<OrderItemResponseDto> Items { get; set; } = new();
     public List<PaymentResponseDto> Payments { get; set; } = new();

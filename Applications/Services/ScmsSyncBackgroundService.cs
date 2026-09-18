@@ -49,8 +49,8 @@ public class ScmsSyncBackgroundService : BackgroundService
         using var scope = _serviceProvider.CreateScope();
         var inventoryService = scope.ServiceProvider.GetRequiredService<IInventoryService>();
 
-        // We assume Location 1 for default POS sync
-        int defaultLocationId = 1;
+        // We assume Location 999 for Commissary POS sync
+        int defaultLocationId = 999;
 
         // Get all current stock to calculate delta
         var posStocks = await inventoryService.GetAllStockAsync();

@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Applications.Interfaces;
 using Api.Contracts.Refund;
+using Api.Middlewares;
 
 namespace Api.Controllers;
 
@@ -20,6 +21,7 @@ public class RefundController : ControllerBase
 
     // POST api-pos/refunds
     [HttpPost]
+    [RateLimit(WindowSeconds = 5, MaxRequests = 1, Message = "Refund request is already being submitted. Please wait a moment.")]
     [ProducesResponseType(typeof(RefundResponseDto), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> SubmitRefund([FromBody] CreateRefundRequestDto dto)
@@ -41,6 +43,7 @@ public class RefundController : ControllerBase
 
     // PUT api-pos/refunds/{id}/approve
     [HttpPut("{id:int}/approve")]
+    [RateLimit(WindowSeconds = 5, MaxRequests = 1, Message = "This refund is already being approved. Please wait a moment.")]
     [ProducesResponseType(typeof(RefundResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -59,6 +62,29 @@ public class RefundController : ControllerBase
             return BadRequest(ex.Message);
         }
     }
+
+    // PUT api-pos/refunds/{id}/reject
+    [HttpPut("{id:int}/reject")]
+    [RateLimit(WindowSeconds = 5, MaxRequests = 1, Message = "This refund is already being rejected. Please wait a moment.")]
+    [ProducesResponseType(typeof(RefundResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> RejectRefund(int id, [FromBody] ApproveRefundDto dto)
+    {
+        if (dto == null) return BadRequest("Rejection data is required.");
+
+        try
+        {
+            var refund = await _refundService.RejectRefundAsync(id, dto);
+            if (refund == null) return NotFound($"Refund request with ID {id} not found.");
+            return Ok(refund);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
+
 
     // ── Supporting: List all refund requests for manager review ──
 

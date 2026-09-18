@@ -15,12 +15,14 @@ public class OrderManagementService : IOrderManagementService
     private readonly PosDbContext _db;
     private readonly IInventoryService _inventoryService;
     private readonly IHttpContextAccessor _httpContextAccessor;
+    private readonly IAuditLogService _auditLogService;
 
-    public OrderManagementService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor)
+    public OrderManagementService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor, IAuditLogService auditLogService)
     {
         _db = db;
         _inventoryService = inventoryService;
         _httpContextAccessor = httpContextAccessor;
+        _auditLogService = auditLogService;
     }
 
     // ────────────────────────────────────────────────────
@@ -30,21 +32,19 @@ public class OrderManagementService : IOrderManagementService
     public async Task<List<OrderManagementResponseDto>> GetPendingApprovalAsync()
     {
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        var query = _db.Orders.AsQueryable();
-
         if (currentUser?.SubRole == "Cashier")
         {
-            var locationId = currentUser.LocationId ?? 0;
-            query = query.Where(o => o.LocationId == locationId);
+            throw new InvalidOperationException("Cashiers are not authorized to view or approve ecommerce orders.");
         }
 
-        var orders = await query
+        var orders = await _db.Orders
             .Include(o => o.OrderItems)
                 .ThenInclude(oi => oi.ProductVariation)
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
             .Include(o => o.Location)
-            .Where(o => o.OrderSource == "Ecommerce" && o.OrderStatus == "Pending")
+            .Include(o => o.StatusHistory)
+            .Where(o => o.OrderSource == "Ecommerce" && (o.OrderStatus == "Pending" || o.OrderStatus == "Awaiting Stock"))
             .OrderBy(o => o.CreatedAt)
             .ToListAsync();
 
@@ -59,24 +59,46 @@ public class OrderManagementService : IOrderManagementService
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
             .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId)
-            throw new InvalidOperationException("You are not authorized to perform this action for other locations.");
+        if ((currentUser?.SubRole == "Cashier" || currentUser?.SubRole == "OrderManager") && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId)
+            throw new InvalidOperationException("You are not authorized to approve this order for another location.");
+        
+        if (currentUser?.SubRole == "Cashier" && order.OrderSource == "Ecommerce")
+            throw new InvalidOperationException("Cashiers are not authorized to approve ecommerce orders.");
 
-        if (order.OrderStatus != "Pending")
-            throw new InvalidOperationException($"Order {order.OrderNumber} is already {order.OrderStatus}. Only Pending orders can be approved.");
+        if (order.OrderStatus != "Pending" && order.OrderStatus != "Awaiting Stock")
+            throw new InvalidOperationException($"Order {order.OrderNumber} is already {order.OrderStatus}. Only Pending or Awaiting Stock orders can be approved.");
 
+        var currentStatus = order.OrderStatus;
         var now = DateTime.UtcNow;
         order.OrderStatus = "Processing";
         order.ApprovedBy = dto.ApprovedBy;
         order.ApprovedAt = now;
         order.UpdatedAt = now;
 
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Processing", dto.ApprovedBy, "Order approved");
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
+
+        // Deduct stock for pre-orders upon transitioning to "Processing"
+        if (order.IsPreorder && order.LocationId.HasValue)
+        {
+            foreach (var item in order.OrderItems)
+            {
+                try
+                {
+                    await _inventoryService.DeductStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    System.Console.WriteLine($"ApproveOrderAsync: Stock deduction skipped for VariationId {item.VariationId} at Location {order.LocationId.Value}: {ex.Message}");
+                }
+            }
+        }
 
         return MapToResponse(order);
     }
@@ -89,24 +111,49 @@ public class OrderManagementService : IOrderManagementService
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
             .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId)
-            throw new InvalidOperationException("You are not authorized to perform this action for other locations.");
+        if ((currentUser?.SubRole == "Cashier" || currentUser?.SubRole == "OrderManager") && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId)
+            throw new InvalidOperationException("You are not authorized to reject this order for another location.");
 
-        if (order.OrderStatus != "Pending")
-            throw new InvalidOperationException($"Order {order.OrderNumber} is already {order.OrderStatus}. Only Pending orders can be rejected.");
+        if (currentUser?.SubRole == "Cashier" && order.OrderSource == "Ecommerce")
+            throw new InvalidOperationException("Cashiers are not authorized to reject ecommerce orders.");
 
+        if (order.OrderStatus != "Pending" && order.OrderStatus != "Awaiting Stock")
+            throw new InvalidOperationException($"Order {order.OrderNumber} is already {order.OrderStatus}. Only Pending or Awaiting Stock orders can be rejected.");
+
+        // Restore reserved stock back to location (e.g. Commissary 999) on cancellation/rejection, ONLY if it was previously deducted
+        bool shouldRestoreStock = order.LocationId.HasValue && (!order.IsPreorder || (order.IsPreorder && order.OrderStatus != "Awaiting Stock"));
+
+        var currentStatus = order.OrderStatus;
         var now = DateTime.UtcNow;
         order.OrderStatus = "Cancelled";
         order.ApprovedBy = dto.RejectedBy;
         order.RejectionRemarks = dto.RejectionRemarks;
         order.UpdatedAt = now;
 
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Cancelled", dto.RejectedBy, $"Order rejected: {dto.RejectionRemarks}");
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
+
+        if (shouldRestoreStock)
+        {
+            foreach (var item in order.OrderItems)
+            {
+                try
+                {
+                    await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    // Stock record may not be initialized/tracked — log it
+                    System.Console.WriteLine($"RejectOrderAsync: Stock restoration skipped for VariationId {item.VariationId} at Location {order.LocationId.Value}: {ex.Message}");
+                }
+            }
+        }
 
         return MapToResponse(order);
     }
@@ -120,10 +167,11 @@ public class OrderManagementService : IOrderManagementService
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         var query = _db.Orders.AsQueryable();
 
-        if (currentUser?.SubRole == "Cashier")
+        if (currentUser?.SubRole == "Cashier" || (currentUser?.SubRole == "OrderManager" && currentUser.LocationId.HasValue))
         {
             var locationId = currentUser.LocationId ?? 0;
-            query = query.Where(o => o.LocationId == locationId);
+            query = query.Where(o => o.LocationId == locationId || 
+                (currentUser.SubRole == "Cashier" && o.OrderSource == "Ecommerce" && (o.OrderStatus == "Refund Requested" || o.OrderStatus == "Refunded")));
         }
         else
         {
@@ -152,6 +200,7 @@ public class OrderManagementService : IOrderManagementService
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
             .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
             .OrderByDescending(o => o.CreatedAt)
             .ToListAsync();
 
@@ -170,12 +219,16 @@ public class OrderManagementService : IOrderManagementService
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
             .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId)
+        if ((currentUser?.SubRole == "Cashier" || currentUser?.SubRole == "OrderManager") && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId)
             throw new InvalidOperationException("You are not authorized to perform this action for other locations.");
+            
+        if (currentUser?.SubRole == "Cashier" && order.OrderSource == "Ecommerce")
+            throw new InvalidOperationException("Cashiers are not authorized to confirm delivery for ecommerce orders.");
 
         if (order.PaymentMethod != "COD")
             throw new InvalidOperationException($"Only COD orders can be confirmed via delivery. This order uses {order.PaymentMethod}.");
@@ -183,6 +236,7 @@ public class OrderManagementService : IOrderManagementService
         if (order.OrderStatus == "Completed")
             throw new InvalidOperationException($"Order {order.OrderNumber} is already completed.");
 
+        var currentStatus = order.OrderStatus;
         var now = DateTime.UtcNow;
         order.OrderStatus   = "Completed";
         order.PaymentStatus = "Paid";
@@ -190,6 +244,7 @@ public class OrderManagementService : IOrderManagementService
         order.ApprovedAt    = now;
         order.UpdatedAt     = now;
 
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Completed", confirmedBy, "COD delivery confirmed");
         _db.Orders.Update(order);
 
         // POS-031: Write Payment record on delivery confirm
@@ -205,8 +260,8 @@ public class OrderManagementService : IOrderManagementService
 
         await _db.SaveChangesAsync();
 
-        // POS-011: Auto deduct stock per item at this location
-        if (order.LocationId.HasValue)
+        // POS-011: Auto deduct stock per item at this location (only if not already deducted for Ecommerce orders at checkout)
+        if (order.LocationId.HasValue && !string.Equals(order.OrderSource, "Ecommerce", StringComparison.OrdinalIgnoreCase))
         {
             foreach (var item in order.OrderItems)
             {
@@ -220,6 +275,132 @@ public class OrderManagementService : IOrderManagementService
                 }
             }
         }
+
+        return MapToResponse(order);
+    }
+
+    public async Task<OrderManagementResponseDto?> UpdateOrderStatusAsync(int orderId, UpdateOrderStatusDto dto)
+    {
+        var order = await _db.Orders
+            .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.ProductVariation)
+                    .ThenInclude(v => v.Product)
+            .Include(o => o.Payments)
+            .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
+            .FirstOrDefaultAsync(o => o.OrderId == orderId);
+        if (order == null) return null;
+
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier" || (currentUser != null && currentUser.SubRole != "Admin" && currentUser.SubRole != "OrderManager" && currentUser.Username != "posuser"))
+        {
+            throw new InvalidOperationException("Only Order Managers and Admins are authorized to update the status of ecommerce orders.");
+        }
+
+        if (currentUser?.SubRole == "OrderManager" && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId)
+        {
+            throw new InvalidOperationException("You are not authorized to update orders for another location.");
+        }
+
+        var targetStatus = dto.Status.Trim();
+        var currentStatus = order.OrderStatus;
+
+        if (string.Equals(targetStatus, currentStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return MapToResponse(order);
+        }
+
+        var allowedStatuses = new[] { "Pending", "Awaiting Stock", "Processing", "Shipped", "Delivered", "Completed", "Refund Requested", "Refunded", "Cancelled" };
+        if (!allowedStatuses.Contains(targetStatus, System.StringComparer.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"Invalid target status '{targetStatus}'.");
+        }
+
+        var now = DateTime.UtcNow;
+        order.OrderStatus = targetStatus;
+        order.ApprovedBy = dto.UpdatedBy;
+        order.UpdatedAt = now;
+
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, targetStatus, dto.UpdatedBy, $"Status updated via panel");
+
+        if (string.Equals(targetStatus, "Processing", StringComparison.OrdinalIgnoreCase))
+        {
+            order.ApprovedAt = now;
+            // Deduct stock for pre-orders upon transitioning to "Processing"
+            if (order.IsPreorder && order.LocationId.HasValue)
+            {
+                foreach (var item in order.OrderItems)
+                {
+                    try
+                    {
+                        await _inventoryService.DeductStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        System.Console.WriteLine($"UpdateOrderStatusAsync: Stock deduction skipped for VariationId {item.VariationId} at Location {order.LocationId.Value}: {ex.Message}");
+                    }
+                }
+            }
+        }
+        else if (string.Equals(targetStatus, "Cancelled", StringComparison.OrdinalIgnoreCase))
+        {
+            // Restore reserved stock if cancelled, ONLY if it was previously deducted
+            bool shouldRestoreStock = order.LocationId.HasValue && (!order.IsPreorder || (order.IsPreorder && currentStatus != "Awaiting Stock"));
+            if (shouldRestoreStock)
+            {
+                foreach (var item in order.OrderItems)
+                {
+                    try
+                    {
+                        await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        System.Console.WriteLine($"UpdateOrderStatusAsync: Stock restoration skipped for VariationId {item.VariationId} at Location {order.LocationId.Value}: {ex.Message}");
+                    }
+                }
+            }
+        }
+        else if (string.Equals(targetStatus, "Refunded", StringComparison.OrdinalIgnoreCase))
+        {
+            // Restore reserved stock if refunded directly
+            if (order.LocationId.HasValue)
+            {
+                foreach (var item in order.OrderItems)
+                {
+                    try
+                    {
+                        await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        System.Console.WriteLine($"UpdateOrderStatusAsync: Stock restoration skipped for VariationId {item.VariationId} at Location {order.LocationId.Value}: {ex.Message}");
+                    }
+                }
+            }
+        }
+        else if (string.Equals(targetStatus, "Completed", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(targetStatus, "Delivered", StringComparison.OrdinalIgnoreCase))
+        {
+            order.PaymentStatus = "Paid";
+            
+            var hasPayment = await _db.Payments.AnyAsync(p => p.OrderId == order.OrderId && p.PaymentStatus == "Success");
+            if (!hasPayment)
+            {
+                var payment = new Payment
+                {
+                    OrderId        = order.OrderId,
+                    AmountPaid     = order.TotalAmount,
+                    PaymentChannel = order.PaymentMethod ?? "COD",
+                    PaymentStatus  = "Success",
+                    PaidAt         = now
+                };
+                await _db.Payments.AddAsync(payment);
+            }
+        }
+
+        _db.Orders.Update(order);
+        await _db.SaveChangesAsync();
 
         return MapToResponse(order);
     }
@@ -264,20 +445,23 @@ public class OrderManagementService : IOrderManagementService
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
             .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId)
-            throw new InvalidOperationException("You are not authorized to perform this action for other locations.");
+        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
+            throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
 
-        if (order.OrderStatus != "Completed")
-            throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Only Completed orders can be refunded.");
+        if (order.OrderStatus != "Completed" && order.PaymentStatus != "Paid")
+            throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus} (Payment: {order.PaymentStatus}). Only Paid or Completed orders can be refunded.");
 
+        var currentStatus = order.OrderStatus;
         order.OrderStatus = "Refund Requested";
         order.RejectionRemarks = reason; // Store reason here as agreed
         order.UpdatedAt = DateTime.UtcNow;
 
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Refund Requested", 1, reason);
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
 
@@ -292,23 +476,37 @@ public class OrderManagementService : IOrderManagementService
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
             .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
             
         if (order == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId)
-            throw new InvalidOperationException("You are not authorized to perform this action for other locations.");
+        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
+            throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
 
         if (order.OrderStatus != "Refund Requested")
             throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Only Refund Requested orders can be approved.");
 
+        var currentStatus = order.OrderStatus;
         order.OrderStatus = "Refunded";
         order.ApprovedBy = approvedBy;
         order.ApprovedAt = DateTime.UtcNow;
         order.UpdatedAt = DateTime.UtcNow;
 
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Refunded", approvedBy, "Refund approved");
         _db.Orders.Update(order);
+
+        var refundRequests = await _db.RefundRequests.Where(r => r.OrderId == orderId).ToListAsync();
+        foreach (var req in refundRequests)
+        {
+            req.Status = "Approved";
+            req.ApprovedBy = approvedBy;
+            req.ApprovedAt = DateTime.UtcNow;
+            req.UpdatedAt = DateTime.UtcNow;
+            _db.RefundRequests.Update(req);
+        }
+
         await _db.SaveChangesAsync();
 
         // POS-017: Auto restore stock per item
@@ -338,23 +536,36 @@ public class OrderManagementService : IOrderManagementService
                     .ThenInclude(v => v.Product)
             .Include(o => o.Payments)
             .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId)
-            throw new InvalidOperationException("You are not authorized to perform this action for other locations.");
+        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
+            throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
 
         if (order.OrderStatus != "Refund Requested")
             throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Only Refund Requested orders can be rejected.");
 
         // Revert to Completed if refund is rejected
+        var currentStatus = order.OrderStatus;
         order.OrderStatus = "Completed";
         order.ApprovedBy = rejectedBy; // Log manager id
         order.RejectionRemarks = $"Refund Rejected: {reason}";
         order.UpdatedAt = DateTime.UtcNow;
 
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Completed", rejectedBy, $"Refund rejected: {reason}");
         _db.Orders.Update(order);
+
+        var refundRequests = await _db.RefundRequests.Where(r => r.OrderId == orderId).ToListAsync();
+        foreach (var req in refundRequests)
+        {
+            req.Status = "Rejected";
+            req.ApprovedBy = rejectedBy; 
+            req.UpdatedAt = DateTime.UtcNow;
+            _db.RefundRequests.Update(req);
+        }
+
         await _db.SaveChangesAsync();
 
         return MapToResponse(order);
@@ -363,6 +574,20 @@ public class OrderManagementService : IOrderManagementService
     // ────────────────────────────────────────────────────
     // Private helpers
     // ────────────────────────────────────────────────────
+
+    private async Task RecordStatusHistoryAsync(int orderId, string oldStatus, string newStatus, int? changedBy, string? remarks = null)
+    {
+        var history = new OrderStatusHistory
+        {
+            OrderId = orderId,
+            OldStatus = oldStatus,
+            NewStatus = newStatus,
+            ChangedBy = changedBy,
+            Remarks = remarks,
+            CreatedAt = DateTime.UtcNow
+        };
+        await _db.OrderStatusHistories.AddAsync(history);
+    }
 
     private static OrderManagementResponseDto MapToResponse(Order order)
     {
@@ -376,8 +601,8 @@ public class OrderManagementService : IOrderManagementService
             PaymentMethod         = order.PaymentMethod,
             PaymentStatus         = order.PaymentStatus,
             TotalAmount           = order.TotalAmount,
-            AppliedVoucherCode    = order.AppliedVoucherCode,
-            VoucherDiscountAmount = order.VoucherDiscountAmount,
+            AmountTendered        = order.AmountTendered,
+            ChangeAmount          = order.ChangeAmount,
             CustomerId            = order.CustomerId,
             LocationId            = order.LocationId,
             LocationName          = order.Location?.LocationName,
@@ -389,6 +614,13 @@ public class OrderManagementService : IOrderManagementService
             ContactPerson         = order.ContactPerson,
             IsPreorder            = order.IsPreorder,
             CustomVariationNotes  = order.CustomVariationNotes,
+            SeniorPwdId           = order.SeniorPwdId,
+            SeniorPwdName         = order.SeniorPwdName,
+            SeniorPwdStreet       = order.SeniorPwdStreet,
+            SeniorPwdBarangay     = order.SeniorPwdBarangay,
+            SeniorPwdCity         = order.SeniorPwdCity,
+            SeniorPwdProvince     = order.SeniorPwdProvince,
+            SeniorPwdZipCode      = order.SeniorPwdZipCode,
             SubmittedBy           = order.SubmittedBy,
             ApprovedBy            = order.ApprovedBy,
             ApprovedAt            = order.ApprovedAt,
@@ -414,7 +646,17 @@ public class OrderManagementService : IOrderManagementService
                 Quantity      = oi.Quantity,
                 UnitPrice     = oi.UnitPrice,
                 Subtotal      = oi.Subtotal
-            }).ToList() ?? new()
+            }).ToList() ?? new(),
+            StatusHistory = order.StatusHistory?.Select(sh => new OrderStatusHistoryResponseDto
+            {
+                Id = sh.Id,
+                OrderId = sh.OrderId,
+                OldStatus = sh.OldStatus,
+                NewStatus = sh.NewStatus,
+                ChangedBy = sh.ChangedBy,
+                Remarks = sh.Remarks,
+                CreatedAt = sh.CreatedAt
+            }).OrderBy(sh => sh.CreatedAt).ToList() ?? new()
         };
     }
 }

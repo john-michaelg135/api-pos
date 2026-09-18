@@ -10,6 +10,10 @@ public class StockReceiving
     public int? ReceivedBy { get; set; }        // FK to user (auth_db)
     public DateTime ReceivedAt { get; set; }
 
+    // Reconciliation: links this receipt to the originating SCM transfer manifest
+    // (null = manual receipt with no transfer). Lets us reconcile receipts against expected transfers.
+    public string? TransferId { get; set; }
+
     // Navigation
     public ProductVariation? Variation { get; set; }
     public Location? Location { get; set; }

@@ -5,6 +5,7 @@ using Infrastructures.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Http;
 using Api.Middlewares;
+using Infrastructures.Externals;
 
 namespace Applications.Services;
 
@@ -12,12 +13,17 @@ public class InventoryService : IInventoryService
 {
     private readonly PosDbContext _db;
     private readonly IHttpContextAccessor _httpContextAccessor;
+private readonly ScmsApiClient _scmsClient;
+private readonly IAuditLogService _auditLogService;
 
-    public InventoryService(PosDbContext db, IHttpContextAccessor httpContextAccessor)
+    public InventoryService(PosDbContext db, IHttpContextAccessor httpContextAccessor, ScmsApiClient scmsClient, IAuditLogService auditLogService)
     {
         _db = db;
         _httpContextAccessor = httpContextAccessor;
+        _scmsClient = scmsClient;
+        _auditLogService = auditLogService;
     }
+
 
     // ────────────────────────────────────────────────────
     // POS-010: Stock receiving from SCMS
@@ -38,7 +44,7 @@ public class InventoryService : IInventoryService
         if (location == null)
             throw new InvalidOperationException($"Location with ID {dto.LocationId} not found.");
 
-        // Record the receiving event
+        // Record the receiving event (link to the SCM transfer for reconciliation)
         var receiving = new StockReceiving
         {
             VariationId = dto.VariationId,
@@ -46,7 +52,8 @@ public class InventoryService : IInventoryService
             QuantityReceived = dto.QuantityReceived,
             Notes = dto.Notes,
             ReceivedBy = dto.ReceivedBy,
-            ReceivedAt = DateTime.UtcNow
+            ReceivedAt = DateTime.UtcNow,
+            TransferId = dto.TransferId?.ToString()
         };
 
         await _db.StockReceivings.AddAsync(receiving);
@@ -79,7 +86,51 @@ public class InventoryService : IInventoryService
 
         await _db.SaveChangesAsync();
 
-        return new StockResponseDto
+
+        if (dto.TransferId.HasValue)
+        {
+            // Reconciliation bookkeeping: stamp receipt on the linked transfer + its matched line.
+            var transferId = dto.TransferId.Value.ToString();
+            var transfer = await _db.StockTransfers
+                .Include(t => t.Items)
+                .FirstOrDefaultAsync(t => t.TransferId == transferId);
+
+            if (transfer != null)
+            {
+                transfer.ReceivedAt = now;
+
+                // Record the received quantity against the matched line (by resolved variation,
+                // falling back to the first not-yet-received line for this variation).
+                var line = transfer.Items.FirstOrDefault(i => i.ResolvedVariationId == dto.VariationId)
+                    ?? transfer.Items.FirstOrDefault(i => i.ReceivedQuantity == null);
+                if (line != null)
+                {
+                    line.ResolvedVariationId = dto.VariationId;
+                    line.ReceivedQuantity = (line.ReceivedQuantity ?? 0) + dto.QuantityReceived;
+                }
+            }
+
+            try
+            {
+                await _scmsClient.UpdateTransferStatusAsync(transferId, "Completed");
+                if (transfer != null)
+                {
+                    transfer.StatusSyncState = "Acknowledged";
+                    transfer.StatusSyncedAt = DateTime.UtcNow;
+                }
+            }
+            catch (System.Exception ex)
+            {
+                // Best-effort: POS stock is already updated. Mark the callback failed so
+                // reconciliation can detect and re-attempt it later.
+                if (transfer != null) transfer.StatusSyncState = "Failed";
+                System.Console.WriteLine($"Error updating SCM transfer status for Transfer {dto.TransferId}: {ex.Message}");
+            }
+
+            if (transfer != null) await _db.SaveChangesAsync();
+        }
+
+        var response = new StockResponseDto
         {
             StockId = stock.StockId,
             VariationId = stock.VariationId,
@@ -90,6 +141,17 @@ public class InventoryService : IInventoryService
             Quantity = stock.Quantity,
             UpdatedAt = stock.UpdatedAt
         };
+
+        _auditLogService.Log(
+            action: "Create",
+            entity: "StockReceiving",
+            entityId: receiving.ReceivingId,
+            before: null,
+            after: response,
+            performedBy: null
+        );
+
+        return response;
     }
 
     public async Task<List<StockReceivingResponseDto>> GetStockReceivingHistoryAsync()
@@ -297,7 +359,7 @@ public class InventoryService : IInventoryService
         await _db.StockAdjustments.AddAsync(adjustment);
         await _db.SaveChangesAsync();
 
-        return new StockAdjustmentResponseDto
+        var response = new StockAdjustmentResponseDto
         {
             AdjustmentId = adjustment.AdjustmentId,
             VariationId = adjustment.VariationId,
@@ -310,6 +372,17 @@ public class InventoryService : IInventoryService
             CreatedAt = adjustment.CreatedAt,
             UpdatedAt = DateTime.UtcNow
         };
+
+        _auditLogService.Log(
+            action: "Create",
+            entity: "StockAdjustment",
+            entityId: adjustment.AdjustmentId,
+            before: null,
+            after: response,
+            performedBy: null
+        );
+
+        return response;
     }
 
     public async Task<StockAdjustmentResponseDto> ApproveStockAdjustmentAsync(int adjustmentId, int approvedBy)
@@ -363,7 +436,7 @@ public class InventoryService : IInventoryService
 
         await _db.SaveChangesAsync();
 
-        return new StockAdjustmentResponseDto
+        var response = new StockAdjustmentResponseDto
         {
             AdjustmentId = adjustment.AdjustmentId,
             VariationId = adjustment.VariationId,
@@ -377,5 +450,16 @@ public class InventoryService : IInventoryService
             CreatedAt = adjustment.CreatedAt,
             UpdatedAt = DateTime.UtcNow
         };
+
+        _auditLogService.Log(
+            action: "Update",
+            entity: "StockAdjustment",
+            entityId: adjustment.AdjustmentId,
+            before: new { Status = "Pending" },
+            after: new { Status = "Approved", ApprovedBy = approvedBy },
+            performedBy: null
+        );
+
+        return response;
     }
 }

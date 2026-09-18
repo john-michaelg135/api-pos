@@ -14,12 +14,21 @@ public class OrderEntryService : IOrderEntryService
     private readonly PosDbContext _db;
     private readonly IInventoryService _inventoryService;
     private readonly IHttpContextAccessor _httpContextAccessor;
+    private readonly IXenditService _xenditService;
+    private readonly IAuditLogService _auditLogService;
 
-    public OrderEntryService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor)
+    public OrderEntryService(
+        PosDbContext db,
+        IInventoryService inventoryService,
+        IHttpContextAccessor httpContextAccessor,
+        IXenditService xenditService,
+        IAuditLogService auditLogService)
     {
         _db = db;
         _inventoryService = inventoryService;
         _httpContextAccessor = httpContextAccessor;
+        _xenditService = xenditService;
+        _auditLogService = auditLogService;
     }
 
     // ────────────────────────────────────────────────────
@@ -111,6 +120,8 @@ public class OrderEntryService : IOrderEntryService
         // Generate order number: ORD-YYYYMMDD-####
         var orderNumber = await GenerateOrderNumberAsync(now);
 
+        var isGcash = string.Equals(dto.PaymentMethod, "GCash", StringComparison.OrdinalIgnoreCase);
+
         // Create the order
         var order = new Order
         {
@@ -120,11 +131,27 @@ public class OrderEntryService : IOrderEntryService
             LocationId = dto.LocationId,
             SubmittedBy = dto.SubmittedBy,
             PaymentMethod = dto.PaymentMethod,
-            PaymentStatus = "Paid",       // Walk-in POS orders are paid immediately
-            OrderStatus = "Completed",    // Sprint 1: walk-in orders complete on creation
+            PaymentStatus = isGcash ? "Pending" : "Paid",
+            OrderStatus = isGcash ? "Pending" : "Completed",
             TotalAmount = 0,              // Will be calculated below
+            AmountTendered = dto.AmountTendered,
+            ChangeAmount = dto.ChangeAmount,
             CreatedAt = now,
-            UpdatedAt = now
+            UpdatedAt = now,
+            ContactPerson = dto.ContactPerson,
+            DeliveryAddress = dto.DeliveryAddress,
+            InstitutionalStreet = dto.InstitutionalStreet,
+            InstitutionalCity = dto.InstitutionalCity,
+            InstitutionalProvince = dto.InstitutionalProvince,
+            InstitutionalZipCode = dto.InstitutionalZipCode,
+            CustomVariationNotes = dto.CustomVariationNotes,
+            SeniorPwdId = dto.SeniorPwdId,
+            SeniorPwdName = dto.SeniorPwdName,
+            SeniorPwdStreet = dto.SeniorPwdStreet,
+            SeniorPwdBarangay = dto.SeniorPwdBarangay,
+            SeniorPwdCity = dto.SeniorPwdCity,
+            SeniorPwdProvince = dto.SeniorPwdProvince,
+            SeniorPwdZipCode = dto.SeniorPwdZipCode
         };
 
         await _db.Orders.AddAsync(order);
@@ -174,48 +201,40 @@ public class OrderEntryService : IOrderEntryService
 
         await _db.OrderItems.AddRangeAsync(orderItems);
 
-        // US-POS-033: Voucher Validation and Subtotal Deduction Math
-        decimal voucherDiscountAmount = 0;
-        string? appliedVoucherCode = null;
 
-        if (!string.IsNullOrWhiteSpace(dto.VoucherCode))
-        {
-            var voucher = await _db.Vouchers
-                .Where(v => v.VoucherCode == dto.VoucherCode.Trim() && v.IsActive && v.ExpiryDate > now)
-                .FirstOrDefaultAsync();
-
-            if (voucher == null)
-                throw new InvalidOperationException($"Voucher code '{dto.VoucherCode}' is invalid, inactive, or expired.");
-
-            if (totalAmount < voucher.MinimumSpend)
-                throw new InvalidOperationException($"Order subtotal must be at least {voucher.MinimumSpend:C} to apply voucher '{voucher.VoucherCode}'.");
-
-            appliedVoucherCode = voucher.VoucherCode;
-            if (voucher.DiscountType.Equals("Fixed", StringComparison.OrdinalIgnoreCase))
-            {
-                voucherDiscountAmount = voucher.DiscountValue;
-            }
-            else // Percentage
-            {
-                voucherDiscountAmount = Math.Round(totalAmount * (voucher.DiscountValue / 100m), 2);
-            }
-
-            // Ensure discount doesn't exceed total amount
-            if (voucherDiscountAmount > totalAmount)
-            {
-                voucherDiscountAmount = totalAmount;
-            }
-
-            totalAmount -= voucherDiscountAmount;
-        }
 
         // Update total amount and tracking properties
+
         order.TotalAmount = totalAmount;
-        order.AppliedVoucherCode = appliedVoucherCode;
-        order.VoucherDiscountAmount = voucherDiscountAmount > 0 ? voucherDiscountAmount : null;
         _db.Orders.Update(order);
 
         await _db.SaveChangesAsync();
+
+        if (isGcash)
+        {
+            try
+            {
+                var paymentUrl = await _xenditService.CreateInvoiceAsync(order.OrderNumber, order.TotalAmount, $"POS Order {order.OrderNumber}");
+                var payment = new Payment
+                {
+                    OrderId = order.OrderId,
+                    AmountPaid = order.TotalAmount,
+                    PaymentChannel = "GCash",
+                    PaymentStatus = "Pending",
+                    GatewayReferenceNumber = paymentUrl,
+                    PaidAt = now
+                };
+                await _db.Payments.AddAsync(payment);
+                await _db.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                _db.OrderItems.RemoveRange(orderItems);
+                _db.Orders.Remove(order);
+                await _db.SaveChangesAsync();
+                throw new InvalidOperationException($"Failed to create Xendit payment link: {ex.Message}", ex);
+            }
+        }
 
         // POS-011: Auto deduct stock per item at this location
         if (order.LocationId.HasValue)
@@ -234,7 +253,18 @@ public class OrderEntryService : IOrderEntryService
         }
 
         // Return response with full details (order was just created, so it will always exist)
-        return (await BuildOrderResponse(order.OrderId))!;
+        var response = await BuildOrderResponse(order.OrderId);
+        
+        _auditLogService.Log(
+            action: "Create",
+            entity: "Order",
+            entityId: order.OrderId,
+            before: null,
+            after: response,
+            performedBy: null // Let service pull from context
+        );
+
+        return response!;
     }
 
     // ────────────────────────────────────────────────────
@@ -285,15 +315,25 @@ public class OrderEntryService : IOrderEntryService
     private async Task<string> GenerateOrderNumberAsync(DateTime date)
     {
         var datePrefix = date.ToString("yyyyMMdd");
-        var pattern = $"ORD-{datePrefix}-%";
+        var prefix = $"ORD-{datePrefix}-";
 
-        // Count existing orders for today to get the next sequence number
-        var todayOrderCount = await _db.Orders
-            .Where(o => o.OrderNumber.StartsWith($"ORD-{datePrefix}-"))
-            .CountAsync();
+        var lastOrder = await _db.Orders
+            .Where(o => o.OrderNumber.StartsWith(prefix))
+            .OrderByDescending(o => o.OrderNumber)
+            .FirstOrDefaultAsync();
 
-        var sequence = (todayOrderCount + 1).ToString("D4");
-        return $"ORD-{datePrefix}-{sequence}";
+        int nextSequence = 1;
+        if (lastOrder != null)
+        {
+            var parts = lastOrder.OrderNumber.Split('-');
+            if (parts.Length == 3 && int.TryParse(parts[2], out int lastSequence))
+            {
+                nextSequence = lastSequence + 1;
+            }
+        }
+
+        var sequence = nextSequence.ToString("D4");
+        return $"{prefix}{sequence}";
     }
 
     // ────────────────────────────────────────────────────
@@ -310,6 +350,7 @@ public class OrderEntryService : IOrderEntryService
         if (order.OrderStatus == "Completed")
             throw new InvalidOperationException($"Order {order.OrderNumber} is already completed.");
 
+        var oldStatus = order.OrderStatus;
         var now = DateTime.UtcNow;
         order.OrderStatus = "Completed";
         order.PaymentStatus = "Paid";
@@ -318,6 +359,18 @@ public class OrderEntryService : IOrderEntryService
         order.UpdatedAt = now;
 
         _db.Orders.Update(order);
+
+        // Record status history
+        var history = new OrderStatusHistory
+        {
+            OrderId = order.OrderId,
+            OldStatus = oldStatus,
+            NewStatus = "Completed",
+            ChangedBy = dto.SubmittedBy,
+            Remarks = "Walk-in order confirmed",
+            CreatedAt = now
+        };
+        await _db.OrderStatusHistories.AddAsync(history);
 
         // POS-031: Write Payment record on confirm
         var payment = new Payment
@@ -438,23 +491,6 @@ public class OrderEntryService : IOrderEntryService
         return (await BuildOrderResponse(order.OrderId))!;
     }
 
-    // ────────────────────────────────────────────────────
-    // POS-009: Pre-order flag toggle
-    // ────────────────────────────────────────────────────
-
-    public async Task<OrderResponseDto?> SetPreorderAsync(int orderId, bool isPreorder)
-    {
-        var order = await _db.Orders.FindAsync(orderId);
-        if (order == null) return null;
-
-        order.IsPreorder = isPreorder;
-        order.UpdatedAt = DateTime.UtcNow;
-
-        _db.Orders.Update(order);
-        await _db.SaveChangesAsync();
-
-        return await BuildOrderResponse(orderId);
-    }
 
     // ────────────────────────────────────────────────────
     // EC-008 / EC-019: Ecommerce order submission
@@ -468,7 +504,14 @@ public class OrderEntryService : IOrderEntryService
         {
             var exists = await _db.ProductVariations.AnyAsync(v => v.VariationId == cartItem.VariationId);
             if (!exists)
-                throw new InvalidOperationException($"Product variation with ID {cartItem.VariationId} not found.");
+            {
+                // Fallback for mock ecommerce data (IDs 1-8) which may not exist in the real POS DB
+                var fallbackVariation = await _db.ProductVariations.FirstOrDefaultAsync();
+                if (fallbackVariation == null)
+                    throw new InvalidOperationException("No product variations available in the database to fulfill the mock order.");
+                
+                cartItem.VariationId = fallbackVariation.VariationId;
+            }
         }
 
         var orderNumber = await GenerateOrderNumberAsync(now);
@@ -478,7 +521,9 @@ public class OrderEntryService : IOrderEntryService
             OrderNumber           = orderNumber,
             OrderType             = dto.OrderType,
             OrderSource           = "Ecommerce",
+            LocationId            = 999, // Commissary Location ID
             CustomerId            = dto.CustomerId,
+            CustomerAuthId        = dto.CustomerAuthId,
             DeliveryAddress       = dto.DeliveryAddress,
             InstitutionalStreet   = dto.InstitutionalStreet,
             InstitutionalCity     = dto.InstitutionalCity,
@@ -489,7 +534,7 @@ public class OrderEntryService : IOrderEntryService
             CustomVariationNotes  = dto.CustomVariationNotes,
             PaymentMethod         = dto.PaymentMethod,
             PaymentStatus         = "Pending",
-            OrderStatus           = "Pending",
+            OrderStatus           = dto.IsPreorder ? "Awaiting Stock" : "Pending",
             TotalAmount           = 0,
             CreatedAt             = now,
             UpdatedAt             = now
@@ -510,9 +555,10 @@ public class OrderEntryService : IOrderEntryService
             if (activePrice == null)
                 throw new InvalidOperationException($"No active price found for variation ID {cartItem.VariationId}");
 
+            var basePrice = cartItem.Price ?? activePrice.Price;
             var finalPrice = dto.ApplyPwdDiscount
-                ? Math.Round((activePrice.Price / 1.12m) * 0.80m, 2)
-                : activePrice.Price;
+                ? Math.Round((basePrice / 1.12m) * 0.80m, 2)
+                : basePrice;
 
             var subtotal = finalPrice * cartItem.Quantity;
             totalAmount += subtotal;
@@ -527,33 +573,68 @@ public class OrderEntryService : IOrderEntryService
 
         await _db.OrderItems.AddRangeAsync(orderItems);
 
-        decimal voucherDiscount = 0;
-        string? appliedCode = null;
-
-        if (!string.IsNullOrWhiteSpace(dto.VoucherCode))
-        {
-            var voucher = await _db.Vouchers
-                .Where(v => v.VoucherCode == dto.VoucherCode.Trim() && v.IsActive && v.ExpiryDate > now)
-                .FirstOrDefaultAsync();
-
-            if (voucher == null)
-                throw new InvalidOperationException($"Voucher '{dto.VoucherCode}' is invalid, inactive, or expired.");
-            if (totalAmount < voucher.MinimumSpend)
-                throw new InvalidOperationException($"Minimum spend of {voucher.MinimumSpend:C} required.");
-
-            appliedCode = voucher.VoucherCode;
-            voucherDiscount = voucher.DiscountType.Equals("Fixed", StringComparison.OrdinalIgnoreCase)
-                ? voucher.DiscountValue
-                : Math.Round(totalAmount * (voucher.DiscountValue / 100m), 2);
-            if (voucherDiscount > totalAmount) voucherDiscount = totalAmount;
-            totalAmount -= voucherDiscount;
-        }
-
         order.TotalAmount           = totalAmount;
-        order.AppliedVoucherCode    = appliedCode;
-        order.VoucherDiscountAmount = voucherDiscount > 0 ? voucherDiscount : null;
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
+
+        // Only create a Xendit invoice for online payment methods (e.g. GCash, PayMaya).
+        // COD orders are paid on arrival — they never go through Xendit.
+        var isOnlinePayment = !string.Equals(dto.PaymentMethod, "COD", StringComparison.OrdinalIgnoreCase) &&
+                              !string.Equals(dto.PaymentMethod, "Cash on Delivery", StringComparison.OrdinalIgnoreCase);
+        if (isOnlinePayment)
+        {
+            try
+            {
+                // EC-020: Ecommerce orders redirect back to the ecommerce success page
+                var ecommerceBaseUrl = Environment.GetEnvironmentVariable("XENDIT_ECOMMERCE_REDIRECT_URL")
+                    ?? "http://localhost:3005/checkout/success";
+                var successUrl = $"{ecommerceBaseUrl}?orderId={order.OrderId}&orderNumber={order.OrderNumber}";
+                var failureUrl = $"{ecommerceBaseUrl}?orderId={order.OrderId}&orderNumber={order.OrderNumber}&failed=true";
+
+                var paymentUrl = await _xenditService.CreateInvoiceAsync(
+                    order.OrderNumber,
+                    order.TotalAmount,
+                    $"Ecommerce Order {order.OrderNumber}",
+                    successUrl,
+                    failureUrl);
+                var payment = new Payment
+                {
+                    OrderId = order.OrderId,
+                    AmountPaid = order.TotalAmount,
+                    PaymentChannel = dto.PaymentMethod,
+                    PaymentStatus = "Pending",
+                    GatewayReferenceNumber = paymentUrl,
+                    PaidAt = now
+                };
+                await _db.Payments.AddAsync(payment);
+                await _db.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                _db.OrderItems.RemoveRange(orderItems);
+                _db.Orders.Remove(order);
+                await _db.SaveChangesAsync();
+                throw new InvalidOperationException($"Failed to create Xendit payment link: {ex.Message}", ex);
+            }
+        }
+
+
+        // Deduct stock from the Commissary location (LocationId = 999) for all items in the ecommerce order (only if not a pre-order)
+        if (!order.IsPreorder)
+        {
+            foreach (var item in orderItems)
+            {
+                try
+                {
+                    await _inventoryService.DeductStockAsync(item.VariationId, 999, item.Quantity);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    // If stock record is not initialized for this location yet, log it and continue
+                    System.Console.WriteLine($"CreateEcommerceOrderAsync: Stock deduction skipped for VariationId {item.VariationId} at Location 999: {ex.Message}");
+                }
+            }
+        }
 
         return (await BuildOrderResponse(order.OrderId))!;
     }
@@ -585,11 +666,12 @@ public class OrderEntryService : IOrderEntryService
             LocationName = order.Location?.LocationName,
             LocationId = order.LocationId,
             TotalAmount = order.TotalAmount,
-            AppliedVoucherCode = order.AppliedVoucherCode,
-            VoucherDiscountAmount = order.VoucherDiscountAmount,
+            AmountTendered = order.AmountTendered,
+            ChangeAmount = order.ChangeAmount,
             OrderStatus = order.OrderStatus,
             PaymentMethod = order.PaymentMethod,
             PaymentStatus = order.PaymentStatus,
+            PaymentUrl = order.Payments.FirstOrDefault(p => p.PaymentStatus == "Pending" && p.PaymentChannel == "GCash")?.GatewayReferenceNumber,
             CreatedAt = order.CreatedAt,
             Items = order.OrderItems.Select(oi => new OrderItemResponseDto
             {

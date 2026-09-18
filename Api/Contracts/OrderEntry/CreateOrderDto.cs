@@ -11,10 +11,25 @@ public class CreateOrderDto
     
     // Sprint 2 Pricing Controls
     public bool ApplyPwdDiscount { get; set; } = false;
-
-    [StringLength(15, MinimumLength = 5)]
-    [RegularExpression(@"^[a-zA-Z0-9\-_]+$", ErrorMessage = "Invalid voucher code format.")]
-    public string? VoucherCode { get; set; }
-
+    public decimal? AmountTendered { get; set; }
+    public decimal? ChangeAmount { get; set; }
     public List<CartItemDto> Items { get; set; } = new();
+
+    // Customer / PWD Details
+    public string? ContactPerson { get; set; }
+    public string? DeliveryAddress { get; set; }
+    public string? InstitutionalStreet { get; set; }
+    public string? InstitutionalCity { get; set; }
+    public string? InstitutionalProvince { get; set; }
+    public string? InstitutionalZipCode { get; set; }
+    public string? CustomVariationNotes { get; set; }
+
+    // Dedicated Senior/PWD Fields
+    public string? SeniorPwdId { get; set; }
+    public string? SeniorPwdName { get; set; }
+    public string? SeniorPwdStreet { get; set; }
+    public string? SeniorPwdBarangay { get; set; }
+    public string? SeniorPwdCity { get; set; }
+    public string? SeniorPwdProvince { get; set; }
+    public string? SeniorPwdZipCode { get; set; }
 }
