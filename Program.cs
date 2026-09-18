@@ -28,6 +28,18 @@ if (File.Exists(envPath))
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ── Kestrel limits ──
+// The web-pos frontend proxies /api-pos/* through Next.js, which forwards the
+// browser's NextAuth session cookie. For cashier accounts that cookie is large
+// (multi-chunk, ~55 KB) and exceeds Kestrel's default request header limit,
+// causing HTTP 431 (Request Header Fields Too Large). api-pos does not use that
+// cookie (it authenticates via Bearer tokens), but we raise the limit so the
+// oversized header is tolerated rather than rejected.
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxRequestHeadersTotalSize = 128 * 1024; // 128 KB (default 32 KB)
+});
+
 // ── Controllers & OpenAPI ──
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
