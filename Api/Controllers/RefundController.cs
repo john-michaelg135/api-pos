@@ -11,10 +11,45 @@ namespace Api.Controllers;
 public class RefundController : ControllerBase
 {
     private readonly IRefundService _refundService;
+    private readonly bool _authEnabled;
 
-    public RefundController(IRefundService refundService)
+    public RefundController(IRefundService refundService, IConfiguration configuration)
     {
         _refundService = refundService;
+
+        // Enforce RBAC only when auth is enabled. This matches AuthValidationMiddleware:
+        // when AUTH_MIDDLEWARE_ENABLED is not "true" (local dev), requests pass through
+        // unauthenticated, so gating here would break the dev flow.
+        _authEnabled = string.Equals(
+            configuration["AUTH_MIDDLEWARE_ENABLED"], "true",
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Enforces granular RBAC for refund actions. Returns null when allowed, or a
+    /// 401/403 result when the caller lacks the required POS Order Management action.
+    /// Mirrors the web-pos frontend gating so the API cannot be bypassed directly.
+    /// No-op when auth enforcement is disabled (local dev).
+    /// </summary>
+    private IActionResult? RequireOrderManagement(PosAction action)
+    {
+        if (!_authEnabled) return null;
+
+        var user = HttpContext.GetCurrentUser();
+        if (user == null)
+        {
+            return Unauthorized(new { message = "Unauthorized: unable to resolve the current user." });
+        }
+
+        if (!user.Can(PosModules.OrderManagement, action))
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                message = "Forbidden: you do not have permission to perform this refund action."
+            });
+        }
+
+        return null;
     }
 
     // ── US-POS-016: Submit refund request — cashier/customer files a return ──
@@ -26,6 +61,9 @@ public class RefundController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> SubmitRefund([FromBody] CreateRefundRequestDto dto)
     {
+        // Filing a refund request is a cashier capability → Order Management write.
+        if (RequireOrderManagement(PosAction.Write) is { } denied) return denied;
+
         if (dto == null) return BadRequest("Refund data is required.");
 
         try
@@ -49,6 +87,9 @@ public class RefundController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> ApproveRefund(int id, [FromBody] ApproveRefundDto dto)
     {
+        // Approving a refund is a manager capability → Order Management approve.
+        if (RequireOrderManagement(PosAction.Approve) is { } denied) return denied;
+
         if (dto == null) return BadRequest("Approval data is required.");
 
         try
@@ -71,6 +112,9 @@ public class RefundController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> RejectRefund(int id, [FromBody] ApproveRefundDto dto)
     {
+        // Rejecting a refund is a manager capability → Order Management approve.
+        if (RequireOrderManagement(PosAction.Approve) is { } denied) return denied;
+
         if (dto == null) return BadRequest("Rejection data is required.");
 
         try
