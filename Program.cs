@@ -114,37 +114,120 @@ builder.Services.AddHttpClient("AuditService", client =>
 });
 
 // ── Database ──
-var connectionString =
-    $"Host={Environment.GetEnvironmentVariable("POSTGRES_DB_HOST")};" +
-    $"Port={Environment.GetEnvironmentVariable("POSTGRES_DB_PORT")};" +
-    $"Database=pos_db;" +
-    $"Username={Environment.GetEnvironmentVariable("POSTGRES_USERNAME")};" +
-    $"Password={Environment.GetEnvironmentVariable("POSTGRES_PASSWORD")}";
+// Supports a single DATABASE_URL (Neon / Render managed Postgres, SSL enforced)
+// or the split POSTGRES_* vars for local docker. See ConnectionStringFactory.
+var connectionString = ConnectionStringFactory.Build();
 
 builder.Services.AddDbContext<PosDbContext>(options =>
     options.UseNpgsql(connectionString));
 
-// ── CORS for frontend (Next.js on port 3000) ──
+// ── CORS for the web-pos frontend ──
+// Production: restrict to the deployed web-pos origin (WEB_POS_URL). Multiple
+// origins may be provided comma-separated. Local dev origins are always allowed.
+var corsOrigins = new List<string>
+{
+    "http://localhost:3002",
+    "https://localhost:3002",
+};
+var webPosUrl = Environment.GetEnvironmentVariable("WEB_POS_URL");
+if (!string.IsNullOrWhiteSpace(webPosUrl))
+{
+    corsOrigins.AddRange(
+        webPosUrl.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                 .Select(o => o.TrimEnd('/')));
+}
+
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
-        policy.SetIsOriginAllowed(origin => true)
+        policy.WithOrigins(corsOrigins.Distinct().ToArray())
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials());
 });
 
+// ── Authentication (br-auth integration guide, Step 13) ──
+// Validate the bearer access token locally against the Auth Service's published
+// OIDC signing keys (via {JWT_AUTHORITY}/.well-known/openid-configuration).
+// This replaces the per-request call to /api-auth/validate-token.
+// Enforcement is gated by AUTH_MIDDLEWARE_ENABLED so local dev can bypass auth.
+var authEnabled = string.Equals(
+    Environment.GetEnvironmentVariable("AUTH_MIDDLEWARE_ENABLED"), "true",
+    StringComparison.OrdinalIgnoreCase);
+
+// JWT_AUTHORITY is the public HTTPS root of the Auth Service (guide naming).
+// Fall back to AUTH_SERVICE_URL (existing var) then localhost for dev.
+var jwtAuthority =
+    Environment.GetEnvironmentVariable("JWT_AUTHORITY")
+    ?? Environment.GetEnvironmentVariable("AUTH_SERVICE_URL")
+    ?? "https://localhost:5001";
+
+if (authEnabled)
+{
+    builder.Services
+        .AddAuthentication(Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerDefaults.AuthenticationScheme)
+        .AddJwtBearer(options =>
+        {
+            options.Authority = jwtAuthority;
+            options.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
+            // The current Auth Service does not issue resource audiences, so
+            // audience validation stays disabled (per the guide).
+            options.TokenValidationParameters.ValidateAudience = false;
+        });
+
+    builder.Services.AddAuthorization();
+}
+
 var app = builder.Build();
 
 // ── Auto-run migrations & seed data ──
+// Set RUN_DB_MIGRATIONS=true on first deploy (and whenever new migrations ship)
+// so the managed database schema is created/updated at startup. Seeding only
+// runs once the schema exists, so a fresh DB with migrations disabled won't crash.
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<PosDbContext>();
-    if (string.Equals(Environment.GetEnvironmentVariable("RUN_DB_MIGRATIONS"), "true", StringComparison.OrdinalIgnoreCase))
+    var startupLogger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>()
+        .CreateLogger("Startup.Database");
+
+    var runMigrations = string.Equals(
+        Environment.GetEnvironmentVariable("RUN_DB_MIGRATIONS"), "true",
+        StringComparison.OrdinalIgnoreCase);
+
+    try
     {
-        db.Database.Migrate();
+        if (runMigrations)
+        {
+            startupLogger.LogInformation("RUN_DB_MIGRATIONS=true — applying EF Core migrations...");
+            await db.Database.MigrateAsync();
+        }
+
+        // Only seed when the schema is present. On a fresh database with
+        // migrations disabled, skip seeding rather than crash on missing tables.
+        var pendingMigrations = await db.Database.GetPendingMigrationsAsync();
+        var appliedMigrations = await db.Database.GetAppliedMigrationsAsync();
+        if (appliedMigrations.Any() && !pendingMigrations.Any())
+        {
+            await DbSeeder.SeedAsync(db);
+        }
+        else if (!appliedMigrations.Any())
+        {
+            startupLogger.LogWarning(
+                "Database has no applied migrations. Skipping seed. " +
+                "Set RUN_DB_MIGRATIONS=true to create the schema on startup.");
+        }
+        else
+        {
+            startupLogger.LogWarning(
+                "Database has pending migrations ({Count}). Skipping seed until migrated.",
+                pendingMigrations.Count());
+        }
     }
-    await DbSeeder.SeedAsync(db);
+    catch (Exception ex)
+    {
+        startupLogger.LogError(ex, "Database startup (migrate/seed) failed.");
+        throw; // fail fast — a broken DB connection should not serve traffic
+    }
 }
 
 // ── HTTP Pipeline ──
@@ -161,16 +244,22 @@ if (app.Environment.IsDevelopment())
 
 app.UseCors("AllowFrontend");
 
-// US-POS-023: Auth validation middleware — validates JWT on every API call
-// Toggle with AUTH_MIDDLEWARE_ENABLED=true/false
-app.UseMiddleware<AuthValidationMiddleware>();
+// US-POS-023: Authentication + RBAC (br-auth guide Step 13).
+// JwtBearer validates the token signature against the Auth Service's OIDC keys.
+// The bridge middleware then requires an authenticated user (public routes excepted)
+// and projects the validated claims into CurrentUserContext so existing services
+// (GetCurrentUser()) keep working unchanged. All gated by AUTH_MIDDLEWARE_ENABLED.
+if (authEnabled)
+{
+    app.UseAuthentication();
+    app.UseAuthorization();
+    app.UseMiddleware<CurrentUserBridgeMiddleware>();
+}
 
 // Rate limiting — placed after auth so the authenticated user identity is available.
 // Blocks duplicate submissions (double-clicked checkout, spammed refund/approve, etc.)
 // on endpoints marked with [RateLimit]. Toggle with RATE_LIMIT_ENABLED=true/false.
 app.UseMiddleware<RateLimitingMiddleware>();
-
-app.UseAuthorization();
 
 app.MapControllers();
 app.MapHub<Api.Hubs.RefundHub>("/hubs/refund");

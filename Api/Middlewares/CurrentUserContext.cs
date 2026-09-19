@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using System.Security.Claims;
 using System.Text.Json;
 
 namespace Api.Middlewares;
@@ -86,13 +87,24 @@ public static class HttpContextExtensions
     {
         if (context == null) return null;
 
-        // 1. Try to read from Items first (populated by middleware if enabled)
+        // 1. Try to read from Items first (populated by middleware / auth bridge)
         if (context.Items.TryGetValue("CurrentUser", out var userObj) && userObj is CurrentUserContext user)
         {
             return user;
         }
 
-        // 2. Otherwise, parse from headers/cookies manually (works in dev or when bypass is active)
+        // 2. If JwtBearer authenticated the request, build from the validated claims.
+        if (context.User?.Identity?.IsAuthenticated == true)
+        {
+            var fromClaims = JwtClaims.FromPrincipal(context.User);
+            if (fromClaims != null)
+            {
+                context.Items["CurrentUser"] = fromClaims;
+                return fromClaims;
+            }
+        }
+
+        // 3. Otherwise, parse from headers/cookies manually (works in dev or when bypass is active)
         var token = string.Empty;
         var authHeader = context.Request.Headers.Authorization.ToString();
         if (!string.IsNullOrWhiteSpace(authHeader) && authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
@@ -198,6 +210,66 @@ public static class JwtClaims
     }
 
     /// <summary>
+    /// Builds the user context from a validated ClaimsPrincipal (populated by the
+    /// JwtBearer handler). Preferred over ParseUser once authentication has run,
+    /// since the token signature has already been verified against the issuer.
+    /// </summary>
+    public static CurrentUserContext? FromPrincipal(ClaimsPrincipal principal)
+    {
+        try
+        {
+            var idStr = principal.FindFirst("sub")?.Value
+                        ?? principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var username = principal.FindFirst("unique_name")?.Value
+                           ?? principal.FindFirst(ClaimTypes.Name)?.Value
+                           ?? principal.Identity?.Name
+                           ?? string.Empty;
+
+            var apps = Array.Empty<string>();
+            var appsJson = principal.FindFirst("apps")?.Value;
+            if (!string.IsNullOrEmpty(appsJson))
+            {
+                try { apps = JsonSerializer.Deserialize<string[]>(appsJson) ?? Array.Empty<string>(); }
+                catch { /* leave empty on malformed apps claim */ }
+            }
+
+            int? locationId = null;
+            if (int.TryParse(principal.FindFirst("location_id")?.Value, out var lid))
+            {
+                locationId = lid;
+            }
+
+            var subRole = principal.FindFirst("sub_role")?.Value;
+
+            // Roles may appear as multiple role claims; take the first non-empty.
+            var role = principal.FindFirst(ClaimTypes.Role)?.Value
+                       ?? principal.FindFirst("role")?.Value;
+
+            var isSuperUser = string.Equals(
+                principal.FindFirst("isSuperUser")?.Value, "true",
+                StringComparison.OrdinalIgnoreCase);
+
+            var permissions = ParsePosPermissionsFromString(principal.FindFirst("permissions")?.Value);
+
+            return new CurrentUserContext
+            {
+                Id = idStr != null && Guid.TryParse(idStr, out var gid) ? gid : Guid.Empty,
+                Username = username,
+                Apps = apps,
+                LocationId = locationId,
+                SubRole = subRole,
+                Role = role,
+                IsSuperUser = isSuperUser,
+                Permissions = permissions
+            };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Parses the br-auth `permissions` claim into the POS module map. The claim
     /// is a JSON string shaped like:
     ///   { "POS": { "Order Management": { "canRead": true, "canApprove": true, ... }, ... }, "CRMS": {...} }
@@ -205,31 +277,32 @@ public static class JwtClaims
     /// </summary>
     private static Dictionary<string, ModulePermission> ParsePosPermissions(JsonElement root)
     {
+        if (!root.TryGetProperty("permissions", out var permProp)) return new(StringComparer.Ordinal);
+
+        // The raw-token claim may be a JSON string or (rarely) an inline object.
+        var raw = permProp.ValueKind switch
+        {
+            JsonValueKind.String => permProp.GetString(),
+            JsonValueKind.Object => permProp.GetRawText(),
+            _ => null
+        };
+        return ParsePosPermissionsFromString(raw);
+    }
+
+    /// <summary>
+    /// Parses the POS section of the br-auth `permissions` JSON string into the
+    /// module map. Accepts the object form too. Returns an empty map for null,
+    /// empty, "{}" (super users), or malformed input.
+    /// </summary>
+    private static Dictionary<string, ModulePermission> ParsePosPermissionsFromString(string? raw)
+    {
         var result = new Dictionary<string, ModulePermission>(StringComparer.Ordinal);
+        if (string.IsNullOrWhiteSpace(raw)) return result;
 
-        if (!root.TryGetProperty("permissions", out var permProp)) return result;
-
-        // The claim is typically a JSON string; tolerate an inline object too.
-        JsonElement permObj;
-        JsonDocument? inner = null;
         try
         {
-            if (permProp.ValueKind == JsonValueKind.String)
-            {
-                var raw = permProp.GetString();
-                if (string.IsNullOrWhiteSpace(raw)) return result;
-                inner = JsonDocument.Parse(raw);
-                permObj = inner.RootElement;
-            }
-            else if (permProp.ValueKind == JsonValueKind.Object)
-            {
-                permObj = permProp;
-            }
-            else
-            {
-                return result;
-            }
-
+            using var doc = JsonDocument.Parse(raw);
+            var permObj = doc.RootElement;
             if (permObj.ValueKind != JsonValueKind.Object) return result;
             if (!permObj.TryGetProperty("POS", out var posModules) || posModules.ValueKind != JsonValueKind.Object)
             {
@@ -253,10 +326,6 @@ public static class JwtClaims
         catch
         {
             // Malformed permissions claim — treat as no granular permissions.
-        }
-        finally
-        {
-            inner?.Dispose();
         }
 
         return result;

@@ -17,9 +17,10 @@ public class RefundController : ControllerBase
     {
         _refundService = refundService;
 
-        // Enforce RBAC only when auth is enabled. This matches AuthValidationMiddleware:
-        // when AUTH_MIDDLEWARE_ENABLED is not "true" (local dev), requests pass through
-        // unauthenticated, so gating here would break the dev flow.
+        // Enforce RBAC only when auth is enabled. This matches the auth pipeline:
+        // when AUTH_MIDDLEWARE_ENABLED is not "true" (local dev), JwtBearer auth is
+        // not wired up and requests pass through unauthenticated, so gating here
+        // would break the dev flow.
         _authEnabled = string.Equals(
             configuration["AUTH_MIDDLEWARE_ENABLED"], "true",
             StringComparison.OrdinalIgnoreCase);
