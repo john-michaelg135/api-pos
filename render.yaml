@@ -5,7 +5,9 @@ services:
   - type: web
     name: api-pos
     runtime: docker
-    plan: free
+    # Starter (not free): api-pos uses SignalR (WebSockets) for refund
+    # notifications and should not cold-spin. Free tier sleeps after inactivity.
+    plan: starter
     dockerfilePath: ./Dockerfile.prod
     dockerContext: .
     healthCheckPath: /health
@@ -14,29 +16,34 @@ services:
       - key: ASPNETCORE_ENVIRONMENT
         value: Production
 
-      # ── PostgreSQL (Neon / Supabase) ──
-      # Fill these from your Neon connection details.
-      - key: POSTGRES_DB_HOST
+      # ── PostgreSQL (Neon) ──
+      # Single connection string. SSL is enforced automatically for remote hosts.
+      # Use the Neon POOLED connection string, e.g.:
+      #   postgresql://USER:PASSWORD@ep-xxx-pooler.REGION.aws.neon.tech/pos_db?sslmode=require
+      # NOTE: pos_db is shared with ms-probe (read-only consumer). api-pos owns
+      # the schema and seeds the Locations reference data on first boot.
+      - key: DATABASE_URL
         sync: false
-      - key: POSTGRES_DB_PORT
-        value: "5432"
-      - key: POSTGRES_USERNAME
-        sync: false
-      - key: POSTGRES_PASSWORD
-        sync: false
-      # api-pos hardcodes Database=pos_db in its connection string. Create a
-      # database named pos_db on Neon (or rename to match).
 
-      # Run EF migrations + seed on boot (safe to leave true for first deploy).
+      # Run EF migrations + seed on boot. Keep true for the first deploy so the
+      # schema is created; safe to leave true afterwards.
       - key: RUN_DB_MIGRATIONS
         value: "true"
 
-      # ── Auth (owned by another team) ──
-      # AUTH_MIDDLEWARE_ENABLED=false → API accepts calls without validating tokens
-      # (demo mode). Flip to true once you have the auth service's validate-token URL.
+      # ── Auth (Centralized Auth Service, owned by another team) ──
+      # true → JwtBearer validates every request's token against JWT_AUTHORITY's
+      # OIDC keys and RBAC is enforced. Set false only for an unauthenticated demo.
       - key: AUTH_MIDDLEWARE_ENABLED
-        value: "false"
-      - key: AUTH_SERVICE_URL
+        value: "true"
+      # Public HTTPS root of the Auth Service (guide naming). Must be reachable
+      # from Render. Example: https://auth.example.com
+      - key: JWT_AUTHORITY
+        sync: false
+
+      # ── CORS ──
+      # Public origin of the deployed web-pos (Vercel). No trailing slash.
+      # Comma-separate for multiple. Set after web-pos is deployed, then redeploy.
+      - key: WEB_POS_URL
         sync: false
 
       # ── SCMS integration (owned by another team; optional for POS demo) ──
