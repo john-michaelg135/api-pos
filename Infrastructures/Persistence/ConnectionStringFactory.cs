@@ -54,13 +54,9 @@ public static class ConnectionStringFactory
             Database = uri.AbsolutePath.Trim('/') is { Length: > 0 } db ? db : DefaultDatabase,
         };
 
-        // Honor sslmode from the query string if present; otherwise apply the
-        // host-based default below.
-        var query = uri.Query.TrimStart('?');
-        if (query.Contains("sslmode=require", StringComparison.OrdinalIgnoreCase))
-        {
-            builder.SslMode = SslMode.Require;
-        }
+        // Translate libpq-style query params (Neon appends these) into their
+        // Npgsql connection-string equivalents.
+        ApplyQueryParameters(builder, uri.Query);
 
         ApplySsl(builder);
         return builder.ConnectionString;
@@ -79,6 +75,42 @@ public static class ConnectionStringFactory
 
         ApplySsl(builder);
         return builder.ConnectionString;
+    }
+
+    /// <summary>
+    /// Maps libpq-style URI query parameters (e.g. Neon's
+    /// "?sslmode=require&amp;channel_binding=require") onto the Npgsql builder.
+    /// Unknown parameters are ignored so the connection string stays valid.
+    /// </summary>
+    private static void ApplyQueryParameters(NpgsqlConnectionStringBuilder builder, string query)
+    {
+        query = query.TrimStart('?');
+        if (string.IsNullOrEmpty(query)) return;
+
+        foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var kv = pair.Split('=', 2);
+            var key = Uri.UnescapeDataString(kv[0]).Trim().ToLowerInvariant();
+            var value = kv.Length > 1 ? Uri.UnescapeDataString(kv[1]).Trim() : string.Empty;
+
+            switch (key)
+            {
+                case "sslmode":
+                    if (Enum.TryParse<SslMode>(value, ignoreCase: true, out var mode))
+                    {
+                        builder.SslMode = mode;
+                    }
+                    break;
+                case "channel_binding":
+                    // libpq: "require" | "prefer" | "disable". Npgsql: Require/Prefer/Disable.
+                    if (Enum.TryParse<ChannelBinding>(value, ignoreCase: true, out var cb))
+                    {
+                        builder.ChannelBinding = cb;
+                    }
+                    break;
+                // Other libpq params (application_name, options, etc.) are ignored.
+            }
+        }
     }
 
     /// <summary>
