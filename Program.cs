@@ -261,6 +261,11 @@ if (authEnabled)
 // on endpoints marked with [RateLimit]. Toggle with RATE_LIMIT_ENABLED=true/false.
 app.UseMiddleware<RateLimitingMiddleware>();
 
+// ── Health check ──
+// Lightweight liveness endpoint for the platform health check (Render's
+// healthCheckPath: /health). Bypasses auth via the public-route list.
+app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
+
 app.MapControllers();
 app.MapHub<Api.Hubs.RefundHub>("/hubs/refund");
 

@@ -5,9 +5,11 @@ services:
   - type: web
     name: api-pos
     runtime: docker
-    # Starter (not free): api-pos uses SignalR (WebSockets) for refund
-    # notifications and should not cold-spin. Free tier sleeps after inactivity.
-    plan: starter
+    # Free plan: no card required. Note the free tier sleeps after ~15 min of
+    # inactivity (cold start on next request) and SignalR/WebSocket connections
+    # drop while asleep. Fine for setup/demo; upgrade to a paid plan before a
+    # live presentation if you need always-on real-time refund notifications.
+    plan: free
     dockerfilePath: ./Dockerfile.prod
     dockerContext: .
     healthCheckPath: /health
@@ -31,41 +33,39 @@ services:
         value: "true"
 
       # ── Auth (Centralized Auth Service, owned by another team) ──
-      # true → JwtBearer validates every request's token against JWT_AUTHORITY's
-      # OIDC keys and RBAC is enforced. Set false only for an unauthenticated demo.
+      # Starts DISABLED so the backend can deploy and run migrations without the
+      # auth service URL or the frontend in place. When you have the production
+      # auth URL, set AUTH_MIDDLEWARE_ENABLED=true and fill JWT_AUTHORITY, then
+      # redeploy. With it true, JwtBearer validates every request's token against
+      # JWT_AUTHORITY's OIDC keys and RBAC is enforced.
       - key: AUTH_MIDDLEWARE_ENABLED
-        value: "true"
-      # Public HTTPS root of the Auth Service (guide naming). Must be reachable
-      # from Render. Example: https://auth.example.com
+        value: "false"
+      # Public HTTPS root of the Auth Service. Example: https://auth.example.com
+      # Fill this in (and flip the flag above) when auth is ready.
       - key: JWT_AUTHORITY
-        sync: false
+        value: ""
 
       # ── CORS ──
       # Public origin of the deployed web-pos (Vercel). No trailing slash.
-      # Comma-separate for multiple. Set after web-pos is deployed, then redeploy.
+      # Set after the frontend is deployed, then redeploy.
       - key: WEB_POS_URL
-        sync: false
+        value: ""
 
       # ── SCMS integration (owned by another team; optional for POS demo) ──
+      # Left blank on purpose; the app falls back to a default and works without it.
       - key: SCMS_API_BASE_URL
-        sync: false
+        value: ""
 
-      # ── Audit logs (optional) ──
+      # ── Audit logs (optional; disabled) ──
       - key: AUDIT_SERVICE_ENABLED
         value: "false"
       - key: AUDIT_SERVICE_URL
-        sync: false
+        value: ""
 
-      # ── Xendit payments (set your dev keys) ──
-      - key: XENDIT_SECRET_KEY
-        sync: false
-      - key: XENDIT_PUBLIC_KEY
-        sync: false
-      - key: XENDIT_CALLBACK_TOKEN
-        sync: false
-      # Point this at your deployed web-pos sales page once known.
-      - key: XENDIT_REDIRECT_URL
-        sync: false
+      # ── Payments (Xendit) ──
+      # Deferred: payment configuration is intentionally omitted from this
+      # deployment. Add XENDIT_SECRET_KEY / XENDIT_PUBLIC_KEY / XENDIT_CALLBACK_TOKEN
+      # / XENDIT_REDIRECT_URL later when the payment feature is enabled.
 
       # ── Rate limiting ──
       - key: RATE_LIMIT_ENABLED
