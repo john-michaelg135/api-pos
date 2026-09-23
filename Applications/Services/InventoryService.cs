@@ -87,7 +87,11 @@ private readonly IAuditLogService _auditLogService;
         await _db.SaveChangesAsync();
 
 
-        if (dto.TransferId.HasValue)
+        // Only SCM-linked receipts (a real, positive TransferId) touch the SCM
+        // reconciliation + status callback. Manual entries send TransferId 0 and
+        // must NOT reach out to the SCM service (which may be unset/unreachable
+        // in some environments) — otherwise a manual receive fails there.
+        if (dto.TransferId.HasValue && dto.TransferId.Value > 0)
         {
             // Reconciliation bookkeeping: stamp receipt on the linked transfer + its matched line.
             var transferId = dto.TransferId.Value.ToString();
