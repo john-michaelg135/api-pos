@@ -188,11 +188,20 @@ public class OrderManagementService : IOrderManagementService
         if (!string.IsNullOrWhiteSpace(filter.OrderType))
             query = query.Where(o => o.OrderType == filter.OrderType);
 
+        // Npgsql maps CreatedAt to `timestamp with time zone` and REQUIRES UTC
+        // DateTimes for comparisons. A filter value with Unspecified/Local kind
+        // would throw at query time — coerce to UTC to be safe.
         if (filter.DateFrom.HasValue)
-            query = query.Where(o => o.CreatedAt >= filter.DateFrom.Value);
+        {
+            var from = DateTime.SpecifyKind(filter.DateFrom.Value, DateTimeKind.Utc);
+            query = query.Where(o => o.CreatedAt >= from);
+        }
 
         if (filter.DateTo.HasValue)
-            query = query.Where(o => o.CreatedAt <= filter.DateTo.Value);
+        {
+            var to = DateTime.SpecifyKind(filter.DateTo.Value, DateTimeKind.Utc);
+            query = query.Where(o => o.CreatedAt <= to);
+        }
 
         var orders = await query
             .Include(o => o.OrderItems)

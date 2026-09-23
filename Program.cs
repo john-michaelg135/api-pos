@@ -242,6 +242,40 @@ if (app.Environment.IsDevelopment())
 
 // app.UseHttpsRedirection();
 
+// ── Global error surfacing ──
+// Production hides exception detail by default, which turns real DB/schema
+// errors into opaque 500s. This handler logs the full exception and (when
+// EXPOSE_ERRORS=true) returns the message + type in the JSON response so we can
+// diagnose deployed failures. Set EXPOSE_ERRORS=false to hide detail again.
+var exposeErrors = !string.Equals(
+    Environment.GetEnvironmentVariable("EXPOSE_ERRORS"), "false",
+    StringComparison.OrdinalIgnoreCase);
+app.Use(async (context, next) =>
+{
+    try
+    {
+        await next();
+    }
+    catch (Exception ex)
+    {
+        var logger = context.RequestServices
+            .GetRequiredService<ILoggerFactory>()
+            .CreateLogger("UnhandledException");
+        logger.LogError(ex, "Unhandled exception for {Method} {Path}",
+            context.Request.Method, context.Request.Path);
+
+        if (!context.Response.HasStarted)
+        {
+            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+            context.Response.ContentType = "application/json";
+            var payload = exposeErrors
+                ? new { message = ex.Message, type = ex.GetType().Name, inner = ex.InnerException?.Message }
+                : new { message = "Internal server error.", type = (string?)null, inner = (string?)null };
+            await context.Response.WriteAsJsonAsync(payload);
+        }
+    }
+});
+
 app.UseCors("AllowFrontend");
 
 // US-POS-023: Authentication + RBAC (br-auth guide Step 13).
