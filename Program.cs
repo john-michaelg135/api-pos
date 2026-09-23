@@ -79,7 +79,9 @@ builder.Services.AddScoped<ICustomerPortalService, CustomerPortalService>();
 // ── HTTP Clients ──
 
 // Auth service client (US-POS-023)
-var authServiceUrl = Environment.GetEnvironmentVariable("AUTH_SERVICE_URL") ?? "http://api-auth:5000";
+var authServiceUrl = Environment.GetEnvironmentVariable("AUTH_SERVICE_URL");
+if (string.IsNullOrWhiteSpace(authServiceUrl))
+    authServiceUrl = "http://api-auth:5000";
 builder.Services.AddHttpClient("AuthService", client =>
 {
     client.BaseAddress = new Uri(authServiceUrl);
@@ -87,7 +89,12 @@ builder.Services.AddHttpClient("AuthService", client =>
 });
 
 // SCMS integration client (US-POS-028)
-var scmsApiUrl = Environment.GetEnvironmentVariable("SCMS_API_BASE_URL") ?? "http://api-scm:5000";
+// Use a valid placeholder when SCMS_API_BASE_URL is unset OR empty — an empty
+// value would make `new Uri("")` throw during DI, which crashes EVERY request
+// that constructs a controller injecting ScmsApiClient (not just SCM calls).
+var scmsApiUrl = Environment.GetEnvironmentVariable("SCMS_API_BASE_URL");
+if (string.IsNullOrWhiteSpace(scmsApiUrl))
+    scmsApiUrl = "http://api-scm:5000";
 builder.Services.AddHttpClient<ScmsApiClient>(client =>
 {
     client.BaseAddress = new Uri(scmsApiUrl);
@@ -106,7 +113,9 @@ builder.Services.AddHttpClient("XenditClient", client =>
 });
 
 // Shared Audit service client (US-POS-027)
-var auditServiceUrl = Environment.GetEnvironmentVariable("AUDIT_SERVICE_URL") ?? "http://api-audit-logs:5000/";
+var auditServiceUrl = Environment.GetEnvironmentVariable("AUDIT_SERVICE_URL");
+if (string.IsNullOrWhiteSpace(auditServiceUrl))
+    auditServiceUrl = "http://api-audit-logs:5000/";
 builder.Services.AddHttpClient("AuditService", client =>
 {
     client.BaseAddress = new Uri(auditServiceUrl);
