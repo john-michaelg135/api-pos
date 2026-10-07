@@ -35,6 +35,12 @@ public class PosUserPinController : ControllerBase
         {
             var random = new Random();
             var pinCode = random.Next(100000, 999999).ToString();
+
+            // Override for demo accounts
+            if (!string.IsNullOrEmpty(currentUser.Username) && currentUser.Username.Contains("demo", StringComparison.OrdinalIgnoreCase))
+            {
+                pinCode = "000000";
+            }
             
             userPin = new PosUserPin
             {
@@ -45,6 +51,14 @@ public class PosUserPinController : ControllerBase
             };
             
             await _db.PosUserPins.AddAsync(userPin);
+            await _db.SaveChangesAsync();
+        }
+        else if (!string.IsNullOrEmpty(currentUser.Username) && currentUser.Username.Contains("demo", StringComparison.OrdinalIgnoreCase) && userPin.PinCode != "000000")
+        {
+            // If the DB already seeded a random PIN for a demo account prior to this patch, force it back to 000000
+            userPin.PinCode = "000000";
+            userPin.UpdatedAt = DateTime.UtcNow;
+            _db.PosUserPins.Update(userPin);
             await _db.SaveChangesAsync();
         }
 
