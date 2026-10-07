@@ -195,6 +195,70 @@ public class OrderManagementController : ControllerBase
         }
     }
 
+    // ── POS-xxx: Voids ──
+
+    // PUT api-pos/order-management/orders/{orderId}/request-void
+    [HttpPut("orders/{orderId:int}/request-void")]
+    [ProducesResponseType(typeof(OrderManagementResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> RequestVoid(int orderId, [FromBody] RequestRefundDto dto)
+    {
+        if (dto == null || string.IsNullOrWhiteSpace(dto.Reason)) return BadRequest("Void reason is required.");
+        try
+        {
+            var order = await _orderManagementService.RequestVoidAsync(orderId, dto.Reason);
+            if (order == null) return NotFound($"Order with ID {orderId} not found.");
+            return Ok(order);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
+
+    // PUT api-pos/order-management/orders/{orderId}/approve-void
+    [HttpPut("orders/{orderId:int}/approve-void")]
+    [ProducesResponseType(typeof(OrderManagementResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> ApproveVoid(int orderId, [FromBody] ApproveOrderDto dto)
+    {
+        if (dto == null) return BadRequest("Approval data is required.");
+        try
+        {
+            var order = await _orderManagementService.ApproveVoidAsync(orderId, dto.ApprovedBy, dto.PinCode);
+            if (order == null) return NotFound($"Order with ID {orderId} not found.");
+            return Ok(order);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
+
+    // PUT api-pos/order-management/orders/{orderId}/reject-void
+    [HttpPut("orders/{orderId:int}/reject-void")]
+    [ProducesResponseType(typeof(OrderManagementResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> RejectVoid(int orderId, [FromBody] RejectOrderDto dto)
+    {
+        if (dto == null) return BadRequest("Rejection data is required.");
+        if (string.IsNullOrWhiteSpace(dto.RejectionRemarks)) return BadRequest("Rejection remarks are required.");
+        if (string.IsNullOrWhiteSpace(dto.PinCode)) return BadRequest("Manager PIN is required.");
+        try
+        {
+            var order = await _orderManagementService.RejectVoidAsync(orderId, dto.RejectedBy, dto.RejectionRemarks, dto.PinCode);
+            if (order == null) return NotFound($"Order with ID {orderId} not found.");
+            return Ok(order);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
+
     [HttpGet("sync-refunds")]
     public async Task<IActionResult> SyncRefunds([FromServices] Infrastructures.Persistence.PosDbContext db)
     {

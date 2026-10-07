@@ -584,6 +584,152 @@ public class OrderManagementService : IOrderManagementService
     // Private helpers
     // ────────────────────────────────────────────────────
 
+    public async Task<OrderManagementResponseDto?> RequestVoidAsync(int orderId, string reason)
+    {
+        var order = await _db.Orders
+            .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.ProductVariation)
+                    .ThenInclude(v => v.Product)
+            .Include(o => o.Payments)
+            .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
+            .FirstOrDefaultAsync(o => o.OrderId == orderId);
+        if (order == null) return null;
+
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
+            throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
+
+        if (order.OrderStatus == "Void Requested" || order.OrderStatus == "Voided" || order.OrderStatus == "Cancelled" || order.OrderStatus == "Refund Requested" || order.OrderStatus == "Refunded")
+            throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Cannot request void.");
+
+        var currentStatus = order.OrderStatus;
+        order.OrderStatus = "Void Requested";
+        order.RejectionRemarks = reason;
+        order.UpdatedAt = DateTime.UtcNow;
+
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Void Requested", 1, reason);
+        _db.Orders.Update(order);
+        await _db.SaveChangesAsync();
+
+        return MapToResponse(order);
+    }
+
+    public async Task<OrderManagementResponseDto?> ApproveVoidAsync(int orderId, int approvedBy, string? pinCode)
+    {
+        var order = await _db.Orders
+            .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.ProductVariation)
+                    .ThenInclude(v => v.Product)
+            .Include(o => o.Payments)
+            .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
+            .FirstOrDefaultAsync(o => o.OrderId == orderId);
+            
+        if (order == null) return null;
+
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
+            throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
+
+        if (order.OrderStatus != "Void Requested")
+            throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Only Void Requested orders can be approved.");
+
+        if (string.IsNullOrWhiteSpace(pinCode))
+            throw new InvalidOperationException("Manager PIN is required to approve a void.");
+
+        var authUserId = currentUser?.Id.ToString();
+        if (!string.IsNullOrEmpty(authUserId))
+        {
+            var userPin = await _db.PosUserPins.FirstOrDefaultAsync(p => p.AuthUserId == authUserId);
+            if (userPin == null || userPin.PinCode != pinCode)
+                throw new InvalidOperationException("Invalid Manager PIN.");
+        }
+        else
+        {
+            throw new InvalidOperationException("Unable to identify manager to validate PIN.");
+        }
+
+        var currentStatus = order.OrderStatus;
+        order.OrderStatus = "Voided";
+        order.ApprovedBy = approvedBy;
+        order.ApprovedAt = DateTime.UtcNow;
+        order.UpdatedAt = DateTime.UtcNow;
+
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Voided", approvedBy, "Void approved");
+        _db.Orders.Update(order);
+        await _db.SaveChangesAsync();
+
+        if (order.LocationId.HasValue)
+        {
+            foreach (var item in order.OrderItems)
+            {
+                try
+                {
+                    await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                }
+                catch (InvalidOperationException) {}
+            }
+        }
+
+        return MapToResponse(order);
+    }
+
+    public async Task<OrderManagementResponseDto?> RejectVoidAsync(int orderId, int rejectedBy, string reason, string pinCode)
+    {
+        var order = await _db.Orders
+            .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.ProductVariation)
+                    .ThenInclude(v => v.Product)
+            .Include(o => o.Payments)
+            .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
+            .FirstOrDefaultAsync(o => o.OrderId == orderId);
+        if (order == null) return null;
+
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
+            throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
+
+        if (order.OrderStatus != "Void Requested")
+            throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Only Void Requested orders can be rejected.");
+
+        if (string.IsNullOrWhiteSpace(pinCode))
+            throw new InvalidOperationException("Manager PIN is required to reject a void.");
+
+        var authUserId = currentUser?.Id.ToString();
+        if (!string.IsNullOrEmpty(authUserId))
+        {
+            var userPin = await _db.PosUserPins.FirstOrDefaultAsync(p => p.AuthUserId == authUserId);
+            if (userPin == null || userPin.PinCode != pinCode)
+                throw new InvalidOperationException("Invalid Manager PIN.");
+        }
+        else
+        {
+            throw new InvalidOperationException("Unable to identify manager to validate PIN.");
+        }
+
+        var currentStatus = order.OrderStatus;
+        
+        var previousStatusRecord = await _db.OrderStatusHistories
+            .Where(h => h.OrderId == orderId && h.NewStatus == "Void Requested")
+            .OrderByDescending(h => h.CreatedAt)
+            .FirstOrDefaultAsync();
+            
+        string revertStatus = previousStatusRecord?.OldStatus ?? "Completed";
+        
+        order.OrderStatus = revertStatus;
+        order.ApprovedBy = rejectedBy; 
+        order.RejectionRemarks = $"Void Rejected: {reason}";
+        order.UpdatedAt = DateTime.UtcNow;
+
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, revertStatus, rejectedBy, $"Void rejected: {reason}");
+        _db.Orders.Update(order);
+        await _db.SaveChangesAsync();
+
+        return MapToResponse(order);
+    }
+
     private async Task RecordStatusHistoryAsync(int orderId, string oldStatus, string newStatus, int? changedBy, string? remarks = null)
     {
         var history = new OrderStatusHistory

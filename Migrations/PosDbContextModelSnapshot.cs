@@ -394,6 +394,38 @@ namespace api_pos.Migrations
                     b.ToTable("PosUserLocations");
                 });
 
+            modelBuilder.Entity("Domains.Entities.PosUserPin", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("AuthUserId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PinCode")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AuthUserId")
+                        .IsUnique();
+
+                    b.ToTable("PosUserPins");
+                });
+
             modelBuilder.Entity("Domains.Entities.PriceHistory", b =>
                 {
                     b.Property<int>("HistoryId")

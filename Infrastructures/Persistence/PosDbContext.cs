@@ -340,6 +340,15 @@ public class PosDbContext : DbContext
                 .HasForeignKey(e => e.OrderId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
+
+        modelBuilder.Entity<PosUserPin>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).UseIdentityByDefaultColumn();
+            entity.Property(e => e.AuthUserId).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.PinCode).IsRequired().HasMaxLength(20);
+            entity.HasIndex(e => e.AuthUserId).IsUnique();
+        });
     }
 
     public DbSet<Product> Products { get; set; }
@@ -361,4 +370,5 @@ public class PosDbContext : DbContext
     public DbSet<StockAdjustment> StockAdjustments { get; set; }
     public DbSet<CartItem> CartItems { get; set; }
     public DbSet<OrderStatusHistory> OrderStatusHistories { get; set; }
+    public DbSet<PosUserPin> PosUserPins { get; set; }
 }

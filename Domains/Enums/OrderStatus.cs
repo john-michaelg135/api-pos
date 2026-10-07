@@ -7,7 +7,6 @@ public enum OrderStatus
     ReadyForDelivery,
     Dispatched,
     Delivered,
-    Paid,
     Completed,
     Cancelled
 }
