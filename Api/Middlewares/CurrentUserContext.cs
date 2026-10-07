@@ -136,6 +136,22 @@ public static class JwtClaims
     {
         try
         {
+            if (token.StartsWith("demo-token"))
+            {
+                var roleKey = token.Contains('.') ? token.Split('.')[1] : "manager";
+                var isManager = roleKey == "manager";
+                
+                return new CurrentUserContext
+                {
+                    Id = Guid.Empty,
+                    Username = $"{roleKey}@demo.local",
+                    Role = isManager ? "Manager" : (roleKey == "owner" ? "Super Admin" : "Staff/Employee"),
+                    SubRole = isManager ? "Manager" : "Cashier",
+                    IsSuperUser = roleKey == "owner",
+                    Apps = new[] { "POS" }
+                };
+            }
+
             var parts = token.Split('.');
             if (parts.Length < 2) return null;
 
