@@ -168,7 +168,23 @@ public static class JwtClaims
             var root = doc.RootElement;
 
             var idStr = root.TryGetProperty("sub", out var idProp) ? idProp.GetString() : null;
-            var username = root.TryGetProperty("unique_name", out var userProp) ? userProp.GetString() : string.Empty;
+            string username = string.Empty;
+            if (root.TryGetProperty("name", out var nameProp) && !string.IsNullOrWhiteSpace(nameProp.GetString()))
+            {
+                username = nameProp.GetString()!;
+            }
+            else if (root.TryGetProperty("unique_name", out var userProp) && !string.IsNullOrWhiteSpace(userProp.GetString()))
+            {
+                username = userProp.GetString()!;
+            }
+            else if (root.TryGetProperty("preferred_username", out var puProp) && !string.IsNullOrWhiteSpace(puProp.GetString()))
+            {
+                username = puProp.GetString()!;
+            }
+            else if (root.TryGetProperty("email", out var emailProp) && !string.IsNullOrWhiteSpace(emailProp.GetString()))
+            {
+                username = emailProp.GetString()!;
+            }
 
             var apps = Array.Empty<string>();
             if (root.TryGetProperty("apps", out var appsProp))
@@ -236,10 +252,14 @@ public static class JwtClaims
         {
             var idStr = principal.FindFirst("sub")?.Value
                         ?? principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            var username = principal.FindFirst("unique_name")?.Value
-                           ?? principal.FindFirst(ClaimTypes.Name)?.Value
-                           ?? principal.Identity?.Name
-                           ?? string.Empty;
+            var username = principal.FindFirst("name")?.Value
+                        ?? principal.FindFirst("unique_name")?.Value
+                        ?? principal.FindFirst(ClaimTypes.Name)?.Value
+                        ?? principal.FindFirst("preferred_username")?.Value
+                        ?? principal.FindFirst("email")?.Value
+                        ?? principal.FindFirst(ClaimTypes.Email)?.Value
+                        ?? principal.Identity?.Name
+                        ?? string.Empty;
 
             var apps = Array.Empty<string>();
             var appsJson = principal.FindFirst("apps")?.Value;

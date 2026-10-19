@@ -638,6 +638,48 @@ namespace api_pos.Migrations
                     b.ToTable("RefundRequests");
                 });
 
+            modelBuilder.Entity("Domains.Entities.StartingCash", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("numeric(12,2)");
+
+                    b.Property<string>("AuthUserId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateOnly>("BusinessDate")
+                        .HasColumnType("date");
+
+                    b.Property<string>("CashierName")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("LocationId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessDate");
+
+                    b.HasIndex("LocationId");
+
+                    b.HasIndex("AuthUserId", "CashierName", "LocationId", "BusinessDate")
+                        .IsUnique();
+
+                    b.ToTable("StartingCashEntries");
+                });
+
             modelBuilder.Entity("Domains.Entities.Stock", b =>
                 {
                     b.Property<int>("StockId")
@@ -998,6 +1040,17 @@ namespace api_pos.Migrations
                         .IsRequired();
 
                     b.Navigation("Variation");
+                });
+
+            modelBuilder.Entity("Domains.Entities.StartingCash", b =>
+                {
+                    b.HasOne("Domains.Entities.Location", "Location")
+                        .WithMany()
+                        .HasForeignKey("LocationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Location");
                 });
 
             modelBuilder.Entity("Domains.Entities.Stock", b =>

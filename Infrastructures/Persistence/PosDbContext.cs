@@ -349,6 +349,26 @@ public class PosDbContext : DbContext
             entity.Property(e => e.PinCode).IsRequired().HasMaxLength(20);
             entity.HasIndex(e => e.AuthUserId).IsUnique();
         });
+
+        // ── StartingCash (cashier's declared drawer cash, one per cashier/branch/day) ──
+        modelBuilder.Entity<StartingCash>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).UseIdentityByDefaultColumn();
+            entity.Property(e => e.AuthUserId).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.CashierName).IsRequired().HasMaxLength(150);
+            entity.Property(e => e.BusinessDate).IsRequired().HasColumnType("date");
+            entity.Property(e => e.Amount).IsRequired().HasColumnType("numeric(12,2)");
+            entity.Property(e => e.CreatedAt).IsRequired();
+
+            entity.HasIndex(e => new { e.AuthUserId, e.CashierName, e.LocationId, e.BusinessDate }).IsUnique();
+            entity.HasIndex(e => e.BusinessDate);
+
+            entity.HasOne(e => e.Location)
+                .WithMany()
+                .HasForeignKey(e => e.LocationId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
     }
 
     public DbSet<Product> Products { get; set; }
@@ -371,4 +391,5 @@ public class PosDbContext : DbContext
     public DbSet<CartItem> CartItems { get; set; }
     public DbSet<OrderStatusHistory> OrderStatusHistories { get; set; }
     public DbSet<PosUserPin> PosUserPins { get; set; }
+    public DbSet<StartingCash> StartingCashEntries { get; set; }
 }
