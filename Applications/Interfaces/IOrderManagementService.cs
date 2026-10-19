@@ -23,8 +23,8 @@ public interface IOrderManagementService
 
     // POS-016 & 017: Refunds
     Task<OrderManagementResponseDto?> RequestRefundAsync(int orderId, string reason);
-    Task<OrderManagementResponseDto?> ApproveRefundAsync(int orderId, int approvedBy);
-    Task<OrderManagementResponseDto?> RejectRefundAsync(int orderId, int rejectedBy, string reason);
+    Task<OrderManagementResponseDto?> ApproveRefundAsync(int orderId, int approvedBy, string? pinCode);
+    Task<OrderManagementResponseDto?> RejectRefundAsync(int orderId, int rejectedBy, string reason, string? pinCode);
 
     // POS-xxx: Void workflow
     Task<OrderManagementResponseDto?> RequestVoidAsync(int orderId, string reason);

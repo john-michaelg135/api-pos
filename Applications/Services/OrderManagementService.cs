@@ -504,7 +504,7 @@ public class OrderManagementService : IOrderManagementService
         return MapToResponse(order);
     }
 
-    public async Task<OrderManagementResponseDto?> ApproveRefundAsync(int orderId, int approvedBy)
+    public async Task<OrderManagementResponseDto?> ApproveRefundAsync(int orderId, int approvedBy, string? pinCode)
     {
         var order = await _db.Orders
             .Include(o => o.OrderItems)
@@ -523,6 +523,21 @@ public class OrderManagementService : IOrderManagementService
 
         if (order.OrderStatus != "Refund Requested")
             throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Only Refund Requested orders can be approved.");
+
+        if (string.IsNullOrWhiteSpace(pinCode))
+            throw new InvalidOperationException("Manager PIN is required to approve a refund.");
+
+        var authUserId = currentUser?.Id.ToString();
+        if (!string.IsNullOrEmpty(authUserId))
+        {
+            var userPin = await _db.PosUserPins.FirstOrDefaultAsync(p => p.AuthUserId == authUserId);
+            if (userPin == null || userPin.PinCode != pinCode)
+                throw new InvalidOperationException("Invalid Manager PIN.");
+        }
+        else
+        {
+            throw new InvalidOperationException("Unable to identify manager to validate PIN.");
+        }
 
         var currentStatus = order.OrderStatus;
         order.OrderStatus = "Refunded";
@@ -564,7 +579,7 @@ public class OrderManagementService : IOrderManagementService
         return MapToResponse(order);
     }
 
-    public async Task<OrderManagementResponseDto?> RejectRefundAsync(int orderId, int rejectedBy, string reason)
+    public async Task<OrderManagementResponseDto?> RejectRefundAsync(int orderId, int rejectedBy, string reason, string? pinCode)
     {
         var order = await _db.Orders
             .Include(o => o.OrderItems)
@@ -582,6 +597,21 @@ public class OrderManagementService : IOrderManagementService
 
         if (order.OrderStatus != "Refund Requested")
             throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Only Refund Requested orders can be rejected.");
+
+        if (string.IsNullOrWhiteSpace(pinCode))
+            throw new InvalidOperationException("Manager PIN is required to reject a refund.");
+
+        var authUserId = currentUser?.Id.ToString();
+        if (!string.IsNullOrEmpty(authUserId))
+        {
+            var userPin = await _db.PosUserPins.FirstOrDefaultAsync(p => p.AuthUserId == authUserId);
+            if (userPin == null || userPin.PinCode != pinCode)
+                throw new InvalidOperationException("Invalid Manager PIN.");
+        }
+        else
+        {
+            throw new InvalidOperationException("Unable to identify manager to validate PIN.");
+        }
 
         // Revert to Completed if refund is rejected
         var currentStatus = order.OrderStatus;

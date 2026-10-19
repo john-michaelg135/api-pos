@@ -163,9 +163,10 @@ public class OrderManagementController : ControllerBase
     public async Task<IActionResult> ApproveRefund(int orderId, [FromBody] ApproveOrderDto dto)
     {
         if (dto == null) return BadRequest("Approval data is required.");
+        if (string.IsNullOrWhiteSpace(dto.PinCode)) return BadRequest("Manager PIN is required.");
         try
         {
-            var order = await _orderManagementService.ApproveRefundAsync(orderId, dto.ApprovedBy);
+            var order = await _orderManagementService.ApproveRefundAsync(orderId, dto.ApprovedBy, dto.PinCode);
             if (order == null) return NotFound($"Order with ID {orderId} not found.");
             return Ok(order);
         }
@@ -182,10 +183,12 @@ public class OrderManagementController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> RejectRefund(int orderId, [FromBody] RejectOrderDto dto)
     {
-        if (dto == null || string.IsNullOrWhiteSpace(dto.RejectionRemarks)) return BadRequest("Rejection remarks are required.");
+        if (dto == null) return BadRequest("Rejection data is required.");
+        if (string.IsNullOrWhiteSpace(dto.RejectionRemarks)) return BadRequest("Rejection remarks are required.");
+        if (string.IsNullOrWhiteSpace(dto.PinCode)) return BadRequest("Manager PIN is required.");
         try
         {
-            var order = await _orderManagementService.RejectRefundAsync(orderId, dto.RejectedBy, dto.RejectionRemarks);
+            var order = await _orderManagementService.RejectRefundAsync(orderId, dto.RejectedBy, dto.RejectionRemarks, dto.PinCode);
             if (order == null) return NotFound($"Order with ID {orderId} not found.");
             return Ok(order);
         }
