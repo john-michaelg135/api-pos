@@ -167,15 +167,42 @@ public class OrderManagementService : IOrderManagementService
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         var query = _db.Orders.AsQueryable();
 
-        if (currentUser?.SubRole == "Cashier" || (currentUser?.SubRole == "OrderManager" && currentUser.LocationId.HasValue))
+        int? targetLocationId = currentUser?.LocationId;
+        if (!targetLocationId.HasValue && filter.LocationId.HasValue && filter.LocationId.Value > 0)
         {
-            var locationId = currentUser.LocationId ?? 0;
-            query = query.Where(o => o.LocationId == locationId || 
-                (currentUser.SubRole == "Cashier" && o.OrderSource == "Ecommerce" && (o.OrderStatus == "Refund Requested" || o.OrderStatus == "Refunded")));
+            targetLocationId = filter.LocationId.Value;
+        }
+
+        if (!targetLocationId.HasValue && currentUser?.Id != null && currentUser.Id != Guid.Empty)
+        {
+            var authUserId = currentUser.Id.ToString();
+            targetLocationId = await _db.PosUserLocations
+                .Where(ul => ul.AuthUserId == authUserId)
+                .Select(ul => (int?)ul.LocationId)
+                .FirstOrDefaultAsync();
+        }
+
+        if (currentUser?.SubRole == "Cashier")
+        {
+            if (targetLocationId.HasValue)
+            {
+                query = query.Where(o => o.LocationId == targetLocationId.Value || 
+                    (o.OrderSource == "Ecommerce" && (o.OrderStatus == "Refund Requested" || o.OrderStatus == "Refunded")));
+            }
+            else
+            {
+                // If cashier has no specific location resolved, allow viewing store orders (or refund ecommerce items)
+                query = query.Where(o => o.OrderSource != "Ecommerce" || 
+                    (o.OrderStatus == "Refund Requested" || o.OrderStatus == "Refunded"));
+            }
+        }
+        else if (currentUser?.SubRole == "OrderManager" && targetLocationId.HasValue)
+        {
+            query = query.Where(o => o.LocationId == targetLocationId.Value);
         }
         else
         {
-            if (filter.LocationId.HasValue)
+            if (filter.LocationId.HasValue && filter.LocationId.Value > 0)
                 query = query.Where(o => o.LocationId == filter.LocationId.Value);
         }
 
@@ -459,7 +486,7 @@ public class OrderManagementService : IOrderManagementService
         if (order == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
+        if (currentUser?.SubRole == "Cashier" && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
             throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
 
         if (order.OrderStatus != "Completed" && order.PaymentStatus != "Paid")
@@ -491,7 +518,7 @@ public class OrderManagementService : IOrderManagementService
         if (order == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
+        if (currentUser?.SubRole == "Cashier" && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
             throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
 
         if (order.OrderStatus != "Refund Requested")
@@ -550,7 +577,7 @@ public class OrderManagementService : IOrderManagementService
         if (order == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
+        if (currentUser?.SubRole == "Cashier" && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
             throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
 
         if (order.OrderStatus != "Refund Requested")
@@ -597,7 +624,7 @@ public class OrderManagementService : IOrderManagementService
         if (order == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
+        if (currentUser?.SubRole == "Cashier" && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
             throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
 
         if (order.OrderStatus == "Void Requested" || order.OrderStatus == "Voided" || order.OrderStatus == "Cancelled" || order.OrderStatus == "Refund Requested" || order.OrderStatus == "Refunded")
@@ -629,7 +656,7 @@ public class OrderManagementService : IOrderManagementService
         if (order == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
+        if (currentUser?.SubRole == "Cashier" && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
             throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
 
         if (order.OrderStatus != "Void Requested")
@@ -688,7 +715,7 @@ public class OrderManagementService : IOrderManagementService
         if (order == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
+        if (currentUser?.SubRole == "Cashier" && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
             throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
 
         if (order.OrderStatus != "Void Requested")

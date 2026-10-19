@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Http;
 using System.Security.Claims;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using Infrastructures.Persistence;
 
 namespace Api.Middlewares;
 
@@ -87,42 +89,75 @@ public static class HttpContextExtensions
     {
         if (context == null) return null;
 
-        // 1. Try to read from Items first (populated by middleware / auth bridge)
-        if (context.Items.TryGetValue("CurrentUser", out var userObj) && userObj is CurrentUserContext user)
-        {
-            return user;
-        }
+        CurrentUserContext? user = null;
 
-        // 2. If JwtBearer authenticated the request, build from the validated claims.
-        if (context.User?.Identity?.IsAuthenticated == true)
+        // 1. Try to read from Items first (populated by middleware / auth bridge)
+        if (context.Items.TryGetValue("CurrentUser", out var userObj) && userObj is CurrentUserContext u)
         {
-            var fromClaims = JwtClaims.FromPrincipal(context.User);
-            if (fromClaims != null)
+            user = u;
+        }
+        else if (context.User?.Identity?.IsAuthenticated == true)
+        {
+            // 2. If JwtBearer authenticated the request, build from the validated claims.
+            user = JwtClaims.FromPrincipal(context.User);
+        }
+        else
+        {
+            // 3. Otherwise, parse from headers/cookies manually (works in dev or when bypass is active)
+            var token = string.Empty;
+            var authHeader = context.Request.Headers.Authorization.ToString();
+            if (!string.IsNullOrWhiteSpace(authHeader) && authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
             {
-                context.Items["CurrentUser"] = fromClaims;
-                return fromClaims;
+                token = authHeader["Bearer ".Length..].Trim();
+            }
+            else if (context.Request.Cookies.TryGetValue("sso_token", out var cookieToken))
+            {
+                token = cookieToken;
+            }
+
+            if (!string.IsNullOrWhiteSpace(token))
+            {
+                user = JwtClaims.ParseUser(token);
             }
         }
 
-        // 3. Otherwise, parse from headers/cookies manually (works in dev or when bypass is active)
-        var token = string.Empty;
-        var authHeader = context.Request.Headers.Authorization.ToString();
-        if (!string.IsNullOrWhiteSpace(authHeader) && authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        if (user != null)
         {
-            token = authHeader["Bearer ".Length..].Trim();
+            // Resolve location from X-Location-Id request header if not already in token
+            if (!user.LocationId.HasValue && context.Request.Headers.TryGetValue("X-Location-Id", out var locHeader))
+            {
+                if (int.TryParse(locHeader.ToString(), out var headerLocId) && headerLocId > 0)
+                {
+                    user.LocationId = headerLocId;
+                }
+            }
+
+            // Resolve location from PosUserLocations database table for real users if still not populated
+            if (!user.LocationId.HasValue && user.Id != Guid.Empty)
+            {
+                try
+                {
+                    var db = context.RequestServices.GetService<PosDbContext>();
+                    if (db != null)
+                    {
+                        var authUserId = user.Id.ToString();
+                        var loc = db.PosUserLocations.FirstOrDefault(ul => ul.AuthUserId == authUserId);
+                        if (loc != null)
+                        {
+                            user.LocationId = loc.LocationId;
+                        }
+                    }
+                }
+                catch
+                {
+                    // Fail gracefully if db context resolution fails
+                }
+            }
+
+            context.Items["CurrentUser"] = user;
         }
-        else if (context.Request.Cookies.TryGetValue("sso_token", out var cookieToken))
-        {
-            token = cookieToken;
-        }
 
-        if (string.IsNullOrWhiteSpace(token)) return null;
-
-        var contextUser = JwtClaims.ParseUser(token);
-        if (contextUser == null) return null;
-
-        context.Items["CurrentUser"] = contextUser;
-        return contextUser;
+        return user;
     }
 }
 
