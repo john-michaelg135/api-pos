@@ -427,6 +427,9 @@ public class OrderEntryService : IOrderEntryService
                 throw new InvalidOperationException($"Location with ID {dto.LocationId.Value} not found.");
         }
 
+        if (string.IsNullOrWhiteSpace(dto.CustomVariationNotes))
+            throw new InvalidOperationException("Notes / customization is required for institutional orders.");
+
         // Validate all variation IDs
         foreach (var cartItem in dto.Items)
         {

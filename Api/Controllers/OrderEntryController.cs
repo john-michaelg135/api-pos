@@ -86,6 +86,7 @@ public class OrderEntryController : ControllerBase
         if (dto == null) return BadRequest("Order data is required.");
         if (dto.Items == null || dto.Items.Count == 0) return BadRequest("Order must have at least one item.");
         if (string.IsNullOrWhiteSpace(dto.DeliveryAddress)) return BadRequest("Delivery address is required for institutional orders.");
+        if (string.IsNullOrWhiteSpace(dto.CustomVariationNotes)) return BadRequest("Notes / customization is required for institutional orders.");
 
         try
         {
