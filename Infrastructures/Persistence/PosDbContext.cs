@@ -360,6 +360,12 @@ public class PosDbContext : DbContext
             entity.Property(e => e.BusinessDate).IsRequired().HasColumnType("date");
             entity.Property(e => e.Amount).IsRequired().HasColumnType("numeric(12,2)");
             entity.Property(e => e.CreatedAt).IsRequired();
+            entity.Property(e => e.EndShiftAmount).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.EndShiftAuthUserId).HasMaxLength(100);
+            entity.Property(e => e.EndShiftCashierName).HasMaxLength(150);
+            entity.Property(e => e.SuccessfulSalesAmount).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.ApprovedRefundAmount).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.ExpectedCash).HasColumnType("numeric(12,2)");
 
             entity.HasIndex(e => new { e.AuthUserId, e.CashierName, e.LocationId, e.BusinessDate }).IsUnique();
             entity.HasIndex(e => e.BusinessDate);

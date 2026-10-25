@@ -20,6 +20,13 @@ public class StartingCash
 
     public decimal Amount { get; set; }
     public DateTime CreatedAt { get; set; }
+    public decimal? EndShiftAmount { get; set; }
+    public DateTime? EndShiftAt { get; set; }
+    public string? EndShiftAuthUserId { get; set; }
+    public string? EndShiftCashierName { get; set; }
+    public decimal? SuccessfulSalesAmount { get; set; }
+    public decimal? ApprovedRefundAmount { get; set; }
+    public decimal? ExpectedCash { get; set; }
 
     public Location? Location { get; set; }
 }

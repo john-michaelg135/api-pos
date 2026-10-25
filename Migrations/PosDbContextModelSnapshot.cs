@@ -665,6 +665,29 @@ namespace api_pos.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<decimal?>("EndShiftAmount")
+                        .HasColumnType("numeric(12,2)");
+
+                    b.Property<DateTime?>("EndShiftAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("EndShiftAuthUserId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("EndShiftCashierName")
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)");
+
+                    b.Property<decimal?>("SuccessfulSalesAmount")
+                        .HasColumnType("numeric(12,2)");
+
+                    b.Property<decimal?>("ApprovedRefundAmount")
+                        .HasColumnType("numeric(12,2)");
+
+                    b.Property<decimal?>("ExpectedCash")
+                        .HasColumnType("numeric(12,2)");
+
                     b.Property<int>("LocationId")
                         .HasColumnType("integer");
 

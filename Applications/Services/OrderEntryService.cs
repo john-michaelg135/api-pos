@@ -100,6 +100,8 @@ public class OrderEntryService : IOrderEntryService
                 throw new InvalidOperationException("You are not authorized to create orders for other locations.");
         }
 
+        await EnsureShiftIsOpenAsync(dto.LocationId, now);
+
         // Validate location exists (if provided)
         if (dto.LocationId.HasValue)
         {
@@ -233,6 +235,18 @@ public class OrderEntryService : IOrderEntryService
                 await _db.SaveChangesAsync();
                 throw new InvalidOperationException($"Failed to create Xendit payment link: {ex.Message}", ex);
             }
+        }
+        else
+        {
+            await _db.Payments.AddAsync(new Payment
+            {
+                OrderId = order.OrderId,
+                AmountPaid = order.TotalAmount,
+                PaymentChannel = dto.PaymentMethod,
+                PaymentStatus = "Success",
+                PaidAt = now
+            });
+            await _db.SaveChangesAsync();
         }
 
         // POS-011: Auto deduct stock per item at this location
@@ -416,6 +430,23 @@ public class OrderEntryService : IOrderEntryService
         return await BuildOrderResponse(orderId);
     }
 
+    private async Task EnsureShiftIsOpenAsync(int? locationId, DateTime now)
+    {
+        if (!locationId.HasValue)
+            return;
+
+        var businessDate = DateOnly.FromDateTime(now.AddHours(8));
+        var shiftIsClosed = await _db.StartingCashEntries
+            .AsNoTracking()
+            .AnyAsync(entry =>
+                entry.LocationId == locationId.Value
+                && entry.BusinessDate == businessDate
+                && entry.EndShiftAt.HasValue);
+
+        if (shiftIsClosed)
+            throw new InvalidOperationException("This shift has ended. Sales cannot be processed until the next business day.");
+    }
+
     // ────────────────────────────────────────────────────
     // POS-008: Institutional order creation
     // ────────────────────────────────────────────────────
@@ -430,6 +461,8 @@ public class OrderEntryService : IOrderEntryService
                 throw new InvalidOperationException("You are not authorized to create orders for other locations.");
             dto.LocationId = currentUser.LocationId;
         }
+
+        await EnsureShiftIsOpenAsync(dto.LocationId, now);
 
         // Validate location if provided
         if (dto.LocationId.HasValue)
