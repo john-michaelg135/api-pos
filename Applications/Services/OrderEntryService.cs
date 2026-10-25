@@ -94,11 +94,10 @@ public class OrderEntryService : IOrderEntryService
     {
         var now = DateTime.UtcNow;
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier")
+        if (currentUser != null && !PosRoleAuthorization.IsAdministrator(currentUser))
         {
-            if (dto.LocationId.HasValue && dto.LocationId.Value != currentUser.LocationId)
+            if (!dto.LocationId.HasValue || !currentUser.LocationIds.Contains(dto.LocationId.Value))
                 throw new InvalidOperationException("You are not authorized to create orders for other locations.");
-            dto.LocationId = currentUser.LocationId;
         }
 
         // Validate location exists (if provided)
@@ -276,10 +275,11 @@ public class OrderEntryService : IOrderEntryService
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         var query = _db.Orders.AsQueryable();
 
-        if (currentUser?.SubRole == "Cashier")
+        if (currentUser != null && !PosRoleAuthorization.IsAdministrator(currentUser))
         {
-            var locationId = currentUser.LocationId ?? 0;
-            query = query.Where(o => o.LocationId == locationId);
+            var allowedLocations = currentUser.LocationIds;
+            query = query.Where(order =>
+                order.LocationId.HasValue && allowedLocations.Contains(order.LocationId.Value));
         }
 
         var orders = await query
@@ -300,12 +300,23 @@ public class OrderEntryService : IOrderEntryService
         if (orderDto == null) return null;
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" && orderDto.LocationId != currentUser.LocationId)
+        if (currentUser != null && !PosRoleAuthorization.IsAdministrator(currentUser) &&
+            (!orderDto.LocationId.HasValue || !currentUser.LocationIds.Contains(orderDto.LocationId.Value)))
         {
             throw new InvalidOperationException("You are not authorized to view orders from other locations.");
         }
 
         return orderDto;
+    }
+
+    private void EnsureCurrentUserCanAccessOrderLocation(int? locationId)
+    {
+        var user = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (user != null && !PosRoleAuthorization.IsAdministrator(user) &&
+            (!locationId.HasValue || !user.LocationIds.Contains(locationId.Value)))
+        {
+            throw new InvalidOperationException("You are not authorized to access orders outside your assigned location.");
+        }
     }
 
     // ────────────────────────────────────────────────────
@@ -346,6 +357,7 @@ public class OrderEntryService : IOrderEntryService
             .Include(o => o.OrderItems)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
+        EnsureCurrentUserCanAccessOrderLocation(order.LocationId);
 
         if (order.OrderStatus == "Completed")
             throw new InvalidOperationException($"Order {order.OrderNumber} is already completed.");

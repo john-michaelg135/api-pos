@@ -32,12 +32,8 @@ public class OrderManagementService : IOrderManagementService
     public async Task<List<OrderManagementResponseDto>> GetPendingApprovalAsync()
     {
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier")
-        {
-            throw new InvalidOperationException("Cashiers are not authorized to view or approve ecommerce orders.");
-        }
 
-        var orders = await _db.Orders
+        var query = _db.Orders
             .Include(o => o.OrderItems)
                 .ThenInclude(oi => oi.ProductVariation)
                     .ThenInclude(v => v.Product)
@@ -45,8 +41,16 @@ public class OrderManagementService : IOrderManagementService
             .Include(o => o.Location)
             .Include(o => o.StatusHistory)
             .Where(o => o.OrderSource == "Ecommerce" && (o.OrderStatus == "Pending" || o.OrderStatus == "Awaiting Stock"))
-            .OrderBy(o => o.CreatedAt)
-            .ToListAsync();
+            .AsQueryable();
+
+        if (currentUser != null && !PosRoleAuthorization.IsAdministrator(currentUser))
+        {
+            var allowedLocations = currentUser.LocationIds;
+            query = query.Where(order =>
+                order.LocationId.HasValue && allowedLocations.Contains(order.LocationId.Value));
+        }
+
+        var orders = await query.OrderBy(o => o.CreatedAt).ToListAsync();
 
         return orders.Select(MapToResponse).ToList();
     }
@@ -62,6 +66,7 @@ public class OrderManagementService : IOrderManagementService
             .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
+        EnsureCurrentUserCanAccessOrderLocation(order);
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         if ((currentUser?.SubRole == "Cashier" || currentUser?.SubRole == "OrderManager") && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId)
@@ -114,6 +119,7 @@ public class OrderManagementService : IOrderManagementService
             .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
+        EnsureCurrentUserCanAccessOrderLocation(order);
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         if ((currentUser?.SubRole == "Cashier" || currentUser?.SubRole == "OrderManager") && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId)
@@ -167,44 +173,24 @@ public class OrderManagementService : IOrderManagementService
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         var query = _db.Orders.AsQueryable();
 
-        int? targetLocationId = currentUser?.LocationId;
-        if (!targetLocationId.HasValue && filter.LocationId.HasValue && filter.LocationId.Value > 0)
+        if (currentUser is { IsSuperUser: false })
         {
-            targetLocationId = filter.LocationId.Value;
-        }
-
-        if (!targetLocationId.HasValue && currentUser?.Id != null && currentUser.Id != Guid.Empty)
-        {
-            var authUserId = currentUser.Id.ToString();
-            targetLocationId = await _db.PosUserLocations
-                .Where(ul => ul.AuthUserId == authUserId)
-                .Select(ul => (int?)ul.LocationId)
-                .FirstOrDefaultAsync();
-        }
-
-        if (currentUser?.SubRole == "Cashier")
-        {
-            if (targetLocationId.HasValue)
+            var allowedLocations = currentUser.LocationIds;
+            if (allowedLocations.Length == 0 ||
+                (filter.LocationId.HasValue && !allowedLocations.Contains(filter.LocationId.Value)))
             {
-                query = query.Where(o => o.LocationId == targetLocationId.Value || 
-                    (o.OrderSource == "Ecommerce" && (o.OrderStatus == "Refund Requested" || o.OrderStatus == "Refunded")));
+                return [];
             }
-            else
+
+            query = query.Where(order =>
+                order.LocationId.HasValue && allowedLocations.Contains(order.LocationId.Value));
+            if (filter.LocationId.HasValue)
             {
-                // If cashier has no specific location resolved, allow viewing store orders (or refund ecommerce items)
-                query = query.Where(o => o.OrderSource != "Ecommerce" || 
-                    (o.OrderStatus == "Refund Requested" || o.OrderStatus == "Refunded"));
+                query = query.Where(order => order.LocationId == filter.LocationId.Value);
             }
         }
-        else if (currentUser?.SubRole == "OrderManager" && targetLocationId.HasValue)
-        {
-            query = query.Where(o => o.LocationId == targetLocationId.Value);
-        }
-        else
-        {
-            if (filter.LocationId.HasValue && filter.LocationId.Value > 0)
-                query = query.Where(o => o.LocationId == filter.LocationId.Value);
-        }
+        else if (filter.LocationId.HasValue && filter.LocationId.Value > 0)
+            query = query.Where(order => order.LocationId == filter.LocationId.Value);
 
         if (!string.IsNullOrWhiteSpace(filter.OrderStatus))
             query = query.Where(o => o.OrderStatus == filter.OrderStatus);
@@ -258,6 +244,7 @@ public class OrderManagementService : IOrderManagementService
             .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
+        EnsureCurrentUserCanAccessOrderLocation(order);
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         if ((currentUser?.SubRole == "Cashier" || currentUser?.SubRole == "OrderManager") && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId)
@@ -326,16 +313,12 @@ public class OrderManagementService : IOrderManagementService
             .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
+        EnsureCurrentUserCanAccessOrderLocation(order);
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        if (currentUser?.SubRole == "Cashier" || (currentUser != null && currentUser.SubRole != "Admin" && currentUser.SubRole != "OrderManager" && currentUser.Username != "posuser"))
+        if (currentUser != null && !PosRoleAuthorization.IsManager(currentUser))
         {
             throw new InvalidOperationException("Only Order Managers and Admins are authorized to update the status of ecommerce orders.");
-        }
-
-        if (currentUser?.SubRole == "OrderManager" && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId)
-        {
-            throw new InvalidOperationException("You are not authorized to update orders for another location.");
         }
 
         var targetStatus = dto.Status.Trim();
@@ -452,6 +435,7 @@ public class OrderManagementService : IOrderManagementService
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
 
         if (order == null) return null;
+        EnsureCurrentUserCanAccessOrderLocation(order);
 
         return new OrderTrackingDto
         {
@@ -484,6 +468,7 @@ public class OrderManagementService : IOrderManagementService
             .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
+        EnsureCurrentUserCanAccessOrderLocation(order);
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         if (currentUser?.SubRole == "Cashier" && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
@@ -516,6 +501,7 @@ public class OrderManagementService : IOrderManagementService
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
             
         if (order == null) return null;
+        EnsureCurrentUserCanAccessOrderLocation(order);
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         if (currentUser?.SubRole == "Cashier" && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
@@ -527,7 +513,7 @@ public class OrderManagementService : IOrderManagementService
         if (string.IsNullOrWhiteSpace(pinCode))
             throw new InvalidOperationException("Manager PIN is required to approve a refund.");
 
-        var authUserId = currentUser?.Id.ToString();
+        var authUserId = currentUser?.PortalUserId ?? (currentUser?.Id != Guid.Empty ? currentUser?.Id.ToString() : null);
         if (!string.IsNullOrEmpty(authUserId))
         {
             var userPin = await _db.PosUserPins.FirstOrDefaultAsync(p => p.AuthUserId == authUserId);
@@ -590,6 +576,7 @@ public class OrderManagementService : IOrderManagementService
             .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
+        EnsureCurrentUserCanAccessOrderLocation(order);
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         if (currentUser?.SubRole == "Cashier" && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
@@ -601,7 +588,7 @@ public class OrderManagementService : IOrderManagementService
         if (string.IsNullOrWhiteSpace(pinCode))
             throw new InvalidOperationException("Manager PIN is required to reject a refund.");
 
-        var authUserId = currentUser?.Id.ToString();
+        var authUserId = currentUser?.PortalUserId ?? (currentUser?.Id != Guid.Empty ? currentUser?.Id.ToString() : null);
         if (!string.IsNullOrEmpty(authUserId))
         {
             var userPin = await _db.PosUserPins.FirstOrDefaultAsync(p => p.AuthUserId == authUserId);
@@ -652,6 +639,7 @@ public class OrderManagementService : IOrderManagementService
             .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
+        EnsureCurrentUserCanAccessOrderLocation(order);
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         if (currentUser?.SubRole == "Cashier" && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
@@ -684,6 +672,7 @@ public class OrderManagementService : IOrderManagementService
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
             
         if (order == null) return null;
+        EnsureCurrentUserCanAccessOrderLocation(order);
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         if (currentUser?.SubRole == "Cashier" && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
@@ -695,7 +684,7 @@ public class OrderManagementService : IOrderManagementService
         if (string.IsNullOrWhiteSpace(pinCode))
             throw new InvalidOperationException("Manager PIN is required to approve a void.");
 
-        var authUserId = currentUser?.Id.ToString();
+        var authUserId = currentUser?.PortalUserId ?? (currentUser?.Id != Guid.Empty ? currentUser?.Id.ToString() : null);
         if (!string.IsNullOrEmpty(authUserId))
         {
             var userPin = await _db.PosUserPins.FirstOrDefaultAsync(p => p.AuthUserId == authUserId);
@@ -743,6 +732,7 @@ public class OrderManagementService : IOrderManagementService
             .Include(o => o.StatusHistory)
             .FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
+        EnsureCurrentUserCanAccessOrderLocation(order);
 
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         if (currentUser?.SubRole == "Cashier" && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
@@ -754,7 +744,7 @@ public class OrderManagementService : IOrderManagementService
         if (string.IsNullOrWhiteSpace(pinCode))
             throw new InvalidOperationException("Manager PIN is required to reject a void.");
 
-        var authUserId = currentUser?.Id.ToString();
+        var authUserId = currentUser?.PortalUserId ?? (currentUser?.Id != Guid.Empty ? currentUser?.Id.ToString() : null);
         if (!string.IsNullOrEmpty(authUserId))
         {
             var userPin = await _db.PosUserPins.FirstOrDefaultAsync(p => p.AuthUserId == authUserId);
@@ -799,6 +789,20 @@ public class OrderManagementService : IOrderManagementService
             CreatedAt = DateTime.UtcNow
         };
         await _db.OrderStatusHistories.AddAsync(history);
+    }
+
+    private void EnsureCurrentUserCanAccessOrderLocation(Order order)
+    {
+        var user = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (user is null || PosRoleAuthorization.IsAdministrator(user))
+        {
+            return;
+        }
+
+        if (!order.LocationId.HasValue || !user.LocationIds.Contains(order.LocationId.Value))
+        {
+            throw new InvalidOperationException("You are not authorized to access orders outside your assigned location.");
+        }
     }
 
     private static OrderManagementResponseDto MapToResponse(Order order)

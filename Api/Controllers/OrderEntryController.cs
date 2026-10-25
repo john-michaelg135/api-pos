@@ -24,6 +24,9 @@ public class OrderEntryController : ControllerBase
     [ProducesResponseType(typeof(List<ProductGridItemDto>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetProductGrid([FromQuery] int? locationId = null)
     {
+        var user = HttpContext.GetCurrentUser();
+        locationId ??= user?.LocationId;
+        if (PosRoleAuthorization.RequireLocationAccess(HttpContext, locationId) is { } denied) return denied;
         var gridItems = await _orderEntryService.GetProductGridAsync(locationId);
         return Ok(gridItems);
     }
@@ -39,6 +42,9 @@ public class OrderEntryController : ControllerBase
     {
         if (dto == null) return BadRequest("Order data is required.");
         if (dto.Items == null || dto.Items.Count == 0) return BadRequest("Order must have at least one item.");
+        var user = HttpContext.GetCurrentUser();
+        dto.LocationId ??= user?.LocationId;
+        if (PosRoleAuthorization.RequireLocationAccess(HttpContext, dto.LocationId) is { } denied) return denied;
 
         try
         {
@@ -87,6 +93,9 @@ public class OrderEntryController : ControllerBase
         if (dto.Items == null || dto.Items.Count == 0) return BadRequest("Order must have at least one item.");
         if (string.IsNullOrWhiteSpace(dto.DeliveryAddress)) return BadRequest("Delivery address is required for institutional orders.");
         if (string.IsNullOrWhiteSpace(dto.CustomVariationNotes)) return BadRequest("Notes / customization is required for institutional orders.");
+        var user = HttpContext.GetCurrentUser();
+        dto.LocationId ??= user?.LocationId;
+        if (PosRoleAuthorization.RequireLocationAccess(HttpContext, dto.LocationId) is { } denied) return denied;
 
         try
         {

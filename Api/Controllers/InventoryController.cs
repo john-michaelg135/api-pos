@@ -26,8 +26,11 @@ public class InventoryController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> ReceiveStock([FromBody] StockReceivingDto dto)
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         if (dto == null) return BadRequest("Stock receiving data is required.");
         if (dto.QuantityReceived <= 0) return BadRequest("Quantity received must be greater than zero.");
+        if (PosRoleAuthorization.RequireLocationAccess(HttpContext, dto.LocationId) is { } locationDenied)
+            return locationDenied;
 
         try
         {
@@ -46,6 +49,9 @@ public class InventoryController : ControllerBase
     public async Task<IActionResult> GetStockReceivingHistory()
     {
         var history = await _inventoryService.GetStockReceivingHistoryAsync();
+        var user = HttpContext.GetCurrentUser();
+        if (user != null && !PosRoleAuthorization.IsAdministrator(user))
+            history = history.Where(item => user.LocationIds.Contains(item.LocationId)).ToList();
         return Ok(history);
     }
 
@@ -58,6 +64,8 @@ public class InventoryController : ControllerBase
     public async Task<IActionResult> GetStockByLocation([FromQuery] int locationId)
     {
         if (locationId <= 0) return BadRequest("A valid locationId is required.");
+        if (PosRoleAuthorization.RequireLocationAccess(HttpContext, locationId) is { } denied)
+            return denied;
         var stock = await _inventoryService.GetStockByLocationAsync(locationId);
         return Ok(stock);
     }
@@ -70,6 +78,9 @@ public class InventoryController : ControllerBase
     public async Task<IActionResult> GetAllStock()
     {
         var stock = await _inventoryService.GetAllStockAsync();
+        var user = HttpContext.GetCurrentUser();
+        if (user != null && !PosRoleAuthorization.IsAdministrator(user))
+            stock = stock.Where(item => user.LocationIds.Contains(item.LocationId)).ToList();
         return Ok(stock);
     }
 
@@ -81,6 +92,9 @@ public class InventoryController : ControllerBase
     public async Task<IActionResult> GetLowStockAlerts()
     {
         var alerts = await _inventoryService.GetLowStockAlertsAsync();
+        var user = HttpContext.GetCurrentUser();
+        if (user != null && !PosRoleAuthorization.IsAdministrator(user))
+            alerts = alerts.Where(item => user.LocationIds.Contains(item.LocationId)).ToList();
         return Ok(alerts);
     }
 

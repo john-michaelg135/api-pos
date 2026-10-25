@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Mvc;
 using Applications.Interfaces;
 using Api.Contracts.StockAdjustment;
 using Api.Middlewares;
+using Infrastructures.Persistence;
+using Microsoft.EntityFrameworkCore;
 
 namespace Api.Controllers;
 
@@ -11,10 +13,12 @@ namespace Api.Controllers;
 public class StockAdjustmentController : ControllerBase
 {
     private readonly IStockAdjustmentService _adjustmentService;
+    private readonly PosDbContext _db;
 
-    public StockAdjustmentController(IStockAdjustmentService adjustmentService)
+    public StockAdjustmentController(IStockAdjustmentService adjustmentService, PosDbContext db)
     {
         _adjustmentService = adjustmentService;
+        _db = db;
     }
 
     // ── US-POS-019: Submit damage/loss report — status is "PendingApproval", stock unchanged ──
@@ -26,7 +30,10 @@ public class StockAdjustmentController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> SubmitAdjustment([FromBody] CreateStockAdjustmentDto dto)
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         if (dto == null) return BadRequest("Adjustment data is required.");
+        if (PosRoleAuthorization.RequireLocationAccess(HttpContext, dto.LocationId) is { } locationDenied)
+            return locationDenied;
 
         try
         {
@@ -49,7 +56,14 @@ public class StockAdjustmentController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> ApproveAdjustment(int id, [FromBody] ApproveStockAdjustmentDto dto)
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         if (dto == null) return BadRequest("Approval data is required.");
+        var locationId = await _db.StockAdjustments
+            .Where(adjustment => adjustment.AdjustmentId == id)
+            .Select(adjustment => (int?)adjustment.LocationId)
+            .FirstOrDefaultAsync();
+        if (PosRoleAuthorization.RequireLocationAccess(HttpContext, locationId) is { } locationDenied)
+            return locationDenied;
 
         try
         {
@@ -70,7 +84,11 @@ public class StockAdjustmentController : ControllerBase
     [ProducesResponseType(typeof(List<StockAdjustmentResponseDto>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetAllAdjustments()
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         var adjustments = await _adjustmentService.GetAllAdjustmentsAsync();
+        var user = HttpContext.GetCurrentUser();
+        if (user != null && !PosRoleAuthorization.IsAdministrator(user))
+            adjustments = adjustments.Where(item => user.LocationIds.Contains(item.LocationId)).ToList();
         return Ok(adjustments);
     }
 }

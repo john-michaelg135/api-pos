@@ -10,15 +10,18 @@ public sealed class PortalSessionMiddleware
     private const string SessionCookie = "pos_session";
     private const string LocationsPath = "/api-pos/locations";
     private const string LocationManagementModule = "Location Management";
+    private const string SalesProcessingModule = "Sales Processing";
+    private const string OrderManagementModule = "Order Management";
+    private const string ProductManagementModule = "Product Management";
+    private const string StockManagementModule = "Stock Management";
+    private const string SalesReportsModule = "Sales Reports";
     private static readonly string[] PosModules =
     [
-        LocationManagementModule,
-        "Dashboard",
-        "Sales Processing",
-        "Order Management",
-        "Product Management",
-        "Stock Management",
-        "Sales Reports",
+        SalesProcessingModule,
+        OrderManagementModule,
+        ProductManagementModule,
+        StockManagementModule,
+        SalesReportsModule,
     ];
     private static readonly HashSet<string> AdministratorRoles = new(StringComparer.Ordinal)
     {
@@ -45,7 +48,8 @@ public sealed class PortalSessionMiddleware
 
     public async Task InvokeAsync(HttpContext context)
     {
-        if (!context.Request.Path.StartsWithSegments(LocationsPath, StringComparison.OrdinalIgnoreCase))
+        var requiredModule = GetRequiredModule(context.Request.Path, context.Request.Method);
+        if (requiredModule is null)
         {
             await _next(context);
             return;
@@ -75,9 +79,14 @@ public sealed class PortalSessionMiddleware
         }
 
         var isMineRequest = IsMineRequest(context.Request.Path);
+        var isLocationManagementRequest =
+            context.Request.Path.StartsWithSegments(LocationsPath, StringComparison.OrdinalIgnoreCase) &&
+            !isMineRequest &&
+            !(HttpMethods.IsGet(context.Request.Method) &&
+              context.Request.Path.Equals(LocationsPath, StringComparison.OrdinalIgnoreCase));
         string[] modulesToValidate = isMineRequest
             ? PosModules
-            : [LocationManagementModule];
+            : [requiredModule];
         PortalValidationResponse? validation = null;
         var validatedModule = string.Empty;
         try
@@ -166,9 +175,15 @@ public sealed class PortalSessionMiddleware
             return;
         }
 
-        if (!isMineRequest && !AdministratorRoles.Contains(validation.Staff.Role))
+        if (isLocationManagementRequest && !AdministratorRoles.Contains(validation.Staff.Role))
         {
             await WriteErrorAsync(context, StatusCodes.Status403Forbidden, "Only Super Admins and CEOs can manage locations.");
+            return;
+        }
+
+        if (!RoleMayUseModule(validation.Staff.Role, validatedModule))
+        {
+            await WriteErrorAsync(context, StatusCodes.Status403Forbidden, "Your POS role does not allow access to this module.");
             return;
         }
 
@@ -176,6 +191,7 @@ public sealed class PortalSessionMiddleware
         {
             PortalUserId = validation.UserId,
             Username = validation.Staff.Username!,
+            DisplayName = validation.Staff.Name,
             Role = validation.Staff.Role,
             IsSuperUser = AdministratorRoles.Contains(validation.Staff.Role),
             Apps = ["POS"],
@@ -186,6 +202,57 @@ public sealed class PortalSessionMiddleware
 
     private static bool IsMineRequest(PathString path) =>
         path.Value?.Equals($"{LocationsPath}/mine", StringComparison.OrdinalIgnoreCase) == true;
+
+    private static string? GetRequiredModule(PathString path, string method)
+    {
+        if (path.StartsWithSegments(LocationsPath, StringComparison.OrdinalIgnoreCase))
+        {
+            if (IsMineRequest(path)) return LocationManagementModule;
+            if (HttpMethods.IsGet(method) &&
+                path.Equals(LocationsPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return SalesProcessingModule;
+            }
+
+            return LocationManagementModule;
+        }
+
+        if (path.StartsWithSegments("/api-pos/order-entry/orders/ecommerce", StringComparison.OrdinalIgnoreCase))
+            return null;
+        if (path.StartsWithSegments("/api-pos/order-entry", StringComparison.OrdinalIgnoreCase))
+            return SalesProcessingModule;
+        if (path.StartsWithSegments("/api-pos/order-management", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWithSegments("/api-pos/refunds", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWithSegments("/api-pos/starting-cash", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWithSegments("/api-pos/user-pin", StringComparison.OrdinalIgnoreCase))
+            return OrderManagementModule;
+        if (path.StartsWithSegments("/api-pos/product-catalog", StringComparison.OrdinalIgnoreCase))
+            return ProductManagementModule;
+        if (path.StartsWithSegments("/api-pos/analytics", StringComparison.OrdinalIgnoreCase))
+            return SalesReportsModule;
+        if (path.StartsWithSegments("/api-pos/inventory", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWithSegments("/api-pos/transfers", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWithSegments("/api-pos/branches", StringComparison.OrdinalIgnoreCase))
+            return StockManagementModule;
+
+        return null;
+    }
+
+    private static bool RoleMayUseModule(string role, string module)
+    {
+        if (AdministratorRoles.Contains(role)) return true;
+
+        return role switch
+        {
+            "Cashier" => module is SalesProcessingModule or OrderManagementModule,
+            "POS Manager" or "Manager" => module is SalesProcessingModule
+                or OrderManagementModule
+                or ProductManagementModule
+                or StockManagementModule
+                or SalesReportsModule,
+            _ => false,
+        };
+    }
 
     private static Task WriteErrorAsync(HttpContext context, int statusCode, string message)
     {

@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Applications.Interfaces;
 using Api.Contracts.ProductCatalog;
+using Api.Middlewares;
 
 namespace Api.Controllers;
 
@@ -45,6 +46,7 @@ public class ProductCatalogController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> CreateProduct([FromBody] CreateProductDto dto)
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         if (dto == null) return BadRequest("Product data is required.");
         if (string.IsNullOrWhiteSpace(dto.ProductName)) return BadRequest("Product name is required.");
         if (string.IsNullOrWhiteSpace(dto.ProductCategory)) return BadRequest("Product category is required.");
@@ -60,6 +62,7 @@ public class ProductCatalogController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> UpdateProduct(int productId, [FromBody] UpdateProductDto dto)
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         if (dto == null) return BadRequest("Update data is required.");
 
         var product = await _productCatalogService.UpdateProductAsync(productId, dto);
@@ -75,6 +78,7 @@ public class ProductCatalogController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> CreateVariation(int productId, [FromBody] CreateVariationDto dto)
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         if (dto == null) return BadRequest("Variation data is required.");
         if (string.IsNullOrWhiteSpace(dto.VariationName)) return BadRequest("Variation name is required.");
         if (dto.InitialPrice <= 0) return BadRequest("Initial price must be greater than zero.");
@@ -91,6 +95,7 @@ public class ProductCatalogController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> UpdateVariation(int variationId, [FromBody] UpdateVariationDto dto)
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         if (dto == null) return BadRequest("Update data is required.");
 
         var variation = await _productCatalogService.UpdateVariationAsync(variationId, dto);
@@ -107,6 +112,7 @@ public class ProductCatalogController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> SetVariationPrice(int variationId, [FromBody] SetPriceDto dto)
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         if (dto == null) return BadRequest("Price data is required.");
         if (dto.Price <= 0) return BadRequest("Price must be greater than zero.");
 

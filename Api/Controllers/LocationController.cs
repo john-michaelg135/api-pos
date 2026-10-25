@@ -28,6 +28,14 @@ public class LocationController : ControllerBase
     public async Task<IActionResult> GetAllLocations()
     {
         var locations = await _locationService.GetAllLocationsAsync();
+        var user = HttpContext.GetCurrentUser();
+        if (user is { IsSuperUser: false })
+        {
+            locations = locations
+                .Where(location => user.LocationIds.Contains(location.LocationId))
+                .ToList();
+        }
+
         return Ok(locations);
     }
 

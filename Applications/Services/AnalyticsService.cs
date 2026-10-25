@@ -162,10 +162,22 @@ public class AnalyticsService : IAnalyticsService
     {
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         
-        if (currentUser?.SubRole == "Cashier" || (currentUser?.SubRole == "OrderManager" && currentUser.LocationId.HasValue))
+        if (currentUser is { IsSuperUser: false })
         {
-            var locationId = currentUser.LocationId ?? 0;
-            query = query.Where(o => o.LocationId == locationId);
+            var allowedLocations = currentUser.LocationIds;
+            if (allowedLocations.Length == 0 ||
+                (filter.LocationId.HasValue && !allowedLocations.Contains(filter.LocationId.Value)))
+            {
+                return query.Where(_ => false);
+            }
+
+            query = query.Where(o =>
+                o.LocationId.HasValue && allowedLocations.Contains(o.LocationId.Value));
+
+            if (filter.LocationId.HasValue)
+            {
+                query = query.Where(o => o.LocationId == filter.LocationId.Value);
+            }
         }
         else if (filter.LocationId.HasValue)
         {

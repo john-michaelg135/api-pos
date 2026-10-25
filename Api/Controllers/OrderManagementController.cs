@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Applications.Interfaces;
 using Api.Contracts.OrderManagement;
+using Api.Middlewares;
 
 namespace Api.Controllers;
 
@@ -23,6 +24,7 @@ public class OrderManagementController : ControllerBase
     [ProducesResponseType(typeof(List<OrderManagementResponseDto>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetPendingApproval()
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         var orders = await _orderManagementService.GetPendingApprovalAsync();
         return Ok(orders);
     }
@@ -34,6 +36,7 @@ public class OrderManagementController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> ApproveOrder(int orderId, [FromBody] ApproveOrderDto dto)
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         if (dto == null) return BadRequest("Approval data is required.");
         try
         {
@@ -54,6 +57,7 @@ public class OrderManagementController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> RejectOrder(int orderId, [FromBody] RejectOrderDto dto)
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         if (dto == null) return BadRequest("Rejection data is required.");
         if (string.IsNullOrWhiteSpace(dto.RejectionRemarks)) return BadRequest("Rejection remarks are required.");
         try
@@ -88,6 +92,7 @@ public class OrderManagementController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> ConfirmDelivery(int orderId, [FromQuery] int confirmedBy)
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         try
         {
             var order = await _orderManagementService.ConfirmDeliveryAsync(orderId, confirmedBy);
@@ -107,6 +112,7 @@ public class OrderManagementController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> UpdateOrderStatus(int orderId, [FromBody] UpdateOrderStatusDto dto)
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         if (dto == null) return BadRequest("Status data is required.");
         try
         {
@@ -142,6 +148,7 @@ public class OrderManagementController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> RequestRefund(int orderId, [FromBody] RequestRefundDto dto)
     {
+        if (PosRoleAuthorization.RequireCashierOrManager(HttpContext) is { } denied) return denied;
         if (dto == null || string.IsNullOrWhiteSpace(dto.Reason)) return BadRequest("Refund reason is required.");
         try
         {
@@ -162,6 +169,7 @@ public class OrderManagementController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> ApproveRefund(int orderId, [FromBody] ApproveOrderDto dto)
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         if (dto == null) return BadRequest("Approval data is required.");
         if (string.IsNullOrWhiteSpace(dto.PinCode)) return BadRequest("Manager PIN is required.");
         try
@@ -183,6 +191,7 @@ public class OrderManagementController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> RejectRefund(int orderId, [FromBody] RejectOrderDto dto)
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         if (dto == null) return BadRequest("Rejection data is required.");
         if (string.IsNullOrWhiteSpace(dto.RejectionRemarks)) return BadRequest("Rejection remarks are required.");
         if (string.IsNullOrWhiteSpace(dto.PinCode)) return BadRequest("Manager PIN is required.");
@@ -207,6 +216,7 @@ public class OrderManagementController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> RequestVoid(int orderId, [FromBody] RequestRefundDto dto)
     {
+        if (PosRoleAuthorization.RequireCashierOrManager(HttpContext) is { } denied) return denied;
         if (dto == null || string.IsNullOrWhiteSpace(dto.Reason)) return BadRequest("Void reason is required.");
         try
         {
@@ -227,6 +237,7 @@ public class OrderManagementController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> ApproveVoid(int orderId, [FromBody] ApproveOrderDto dto)
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         if (dto == null) return BadRequest("Approval data is required.");
         try
         {
@@ -247,6 +258,7 @@ public class OrderManagementController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> RejectVoid(int orderId, [FromBody] RejectOrderDto dto)
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         if (dto == null) return BadRequest("Rejection data is required.");
         if (string.IsNullOrWhiteSpace(dto.RejectionRemarks)) return BadRequest("Rejection remarks are required.");
         if (string.IsNullOrWhiteSpace(dto.PinCode)) return BadRequest("Manager PIN is required.");
@@ -265,6 +277,7 @@ public class OrderManagementController : ControllerBase
     [HttpGet("sync-refunds")]
     public async Task<IActionResult> SyncRefunds([FromServices] Infrastructures.Persistence.PosDbContext db)
     {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         var refundedOrders = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.ToListAsync(
             db.Orders.Where(o => o.OrderStatus == "Refunded").Select(o => o.OrderId));
         

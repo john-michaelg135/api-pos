@@ -12,29 +12,32 @@ namespace Api.Controllers;
 public class PosUserPinController : ControllerBase
 {
     private readonly PosDbContext _db;
-    private readonly IHttpContextAccessor _httpContextAccessor;
 
-    public PosUserPinController(PosDbContext db, IHttpContextAccessor httpContextAccessor)
+    public PosUserPinController(PosDbContext db)
     {
         _db = db;
-        _httpContextAccessor = httpContextAccessor;
     }
 
     [HttpGet]
     public async Task<IActionResult> GetUserPin()
     {
-        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
+
+        var currentUser = HttpContext.GetCurrentUser();
         if (currentUser == null) return Unauthorized("User not identified.");
 
-        var authUserId = currentUser.Id.ToString();
-        if (string.IsNullOrEmpty(authUserId)) return Unauthorized("No auth user ID.");
+        var authUserId = currentUser.PortalUserId;
+        if (string.IsNullOrWhiteSpace(authUserId) && currentUser.Id != Guid.Empty)
+        {
+            authUserId = currentUser.Id.ToString();
+        }
+        if (string.IsNullOrWhiteSpace(authUserId)) return Unauthorized("Portal user ID is missing.");
 
         var userPin = await _db.PosUserPins.FirstOrDefaultAsync(p => p.AuthUserId == authUserId);
         
         if (userPin == null)
         {
-            var random = new Random();
-            var pinCode = random.Next(100000, 999999).ToString();
+            var pinCode = RandomNumberGenerator.GetInt32(100000, 1000000).ToString();
 
             // Override for demo accounts
             if (!string.IsNullOrEmpty(currentUser.Username) && currentUser.Username.Contains("demo", StringComparison.OrdinalIgnoreCase))

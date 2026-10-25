@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Api.Contracts.Scms;
 using Infrastructures.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Api.Middlewares;
 
 namespace Api.Controllers;
 
@@ -25,6 +26,13 @@ public class BranchesController : ControllerBase
             .AsNoTracking()
             .Where(l => (l.LocationType == "Store" || l.LocationType == "Bazaar") && l.IsActive)
             .ToListAsync();
+        var user = HttpContext.GetCurrentUser();
+        if (user == null) return Unauthorized(new { message = "A valid POS session is required." });
+        if (!PosRoleAuthorization.IsAdministrator(user))
+        {
+            var assignedLocationIds = user.LocationIds ?? Array.Empty<int>();
+            locations = locations.Where(location => assignedLocationIds.Contains(location.LocationId)).ToList();
+        }
 
         var response = new BranchListResponseDto
         {
@@ -52,6 +60,8 @@ public class BranchesController : ControllerBase
 
         var location = await _db.Locations.FindAsync(locId);
         if (location == null) return NotFound("Branch not found.");
+        if (PosRoleAuthorization.RequireLocationAccess(HttpContext, locId) is { } denied)
+            return denied;
 
         var stocks = await _db.Stocks
             .AsNoTracking()

@@ -3,6 +3,8 @@ using Microsoft.EntityFrameworkCore;
 using Infrastructures.Persistence;
 using Domains.Entities;
 using Api.Middlewares;
+using Applications.Interfaces;
+using Applications.Services;
 
 namespace Api.Controllers;
 
@@ -35,11 +37,16 @@ public class StartingCashController : ControllerBase
     private const decimal MaxAmount = 10_000_000m;
 
     private readonly PosDbContext _db;
+    private readonly IPortalUserDirectory _portalUserDirectory;
     private readonly bool _authEnabled;
 
-    public StartingCashController(PosDbContext db, IConfiguration configuration)
+    public StartingCashController(
+        PosDbContext db,
+        IConfiguration configuration,
+        IPortalUserDirectory portalUserDirectory)
     {
         _db = db;
+        _portalUserDirectory = portalUserDirectory;
         _authEnabled = string.Equals(
             configuration["AUTH_MIDDLEWARE_ENABLED"], "true",
             StringComparison.OrdinalIgnoreCase);
@@ -51,12 +58,16 @@ public class StartingCashController : ControllerBase
     private (string AuthUserId, string Name, CurrentUserContext? User) Identity(string? fallbackName = null)
     {
         var user = HttpContext.GetCurrentUser();
-        var id = user == null || user.Id == Guid.Empty ? "anonymous" : user.Id.ToString();
+        var id = user?.PortalUserId
+            ?? (user?.Id != Guid.Empty ? user?.Id.ToString() : null)
+            ?? "anonymous";
 
         // 1. Prefer authenticated username if valid and not "Unknown"
-        var rawName = !string.IsNullOrWhiteSpace(user?.Username) && !string.Equals(user.Username, "Unknown", StringComparison.OrdinalIgnoreCase)
-            ? user.Username
-            : fallbackName;
+        var rawName = !string.IsNullOrWhiteSpace(user?.DisplayName)
+            ? user.DisplayName
+            : !string.IsNullOrWhiteSpace(user?.Username) && !string.Equals(user.Username, "Unknown", StringComparison.OrdinalIgnoreCase)
+                ? user.Username
+                : fallbackName;
 
         // 2. If authenticated username is an email address but the UI sent a human display name:
         if (!string.IsNullOrWhiteSpace(fallbackName) && (string.IsNullOrWhiteSpace(rawName) || rawName.Contains('@')))
@@ -71,7 +82,12 @@ public class StartingCashController : ControllerBase
     /// <summary>Cashiers are pinned to their branch; others use the supplied one.</summary>
     private static int? ResolveLocation(CurrentUserContext? user, int? requested)
     {
-        if (user?.SubRole == "Cashier" && user.LocationId.HasValue) return user.LocationId;
+        if (user is { IsSuperUser: false })
+        {
+            if (requested.HasValue && user.LocationIds.Contains(requested.Value)) return requested;
+            return user.LocationId;
+        }
+
         return requested ?? user?.LocationId;
     }
 
@@ -89,7 +105,7 @@ public class StartingCashController : ControllerBase
                 : null;
         }
 
-        var isManager = user.IsSuperUser
+        var isManager = PosRoleAuthorization.IsManager(user)
             || user.Can(PosModules.OrderManagement, PosAction.Approve)
             || string.Equals(user.SubRole, "Manager", StringComparison.OrdinalIgnoreCase);
 
@@ -98,10 +114,10 @@ public class StartingCashController : ControllerBase
             : StatusCode(StatusCodes.Status403Forbidden, new { message = "Forbidden: only managers can view starting cash records." });
     }
 
-    private static StartingCashDto Map(StartingCash s) => new()
+    private static StartingCashDto Map(StartingCash s, string? cashierName = null) => new()
     {
         Id = s.Id,
-        CashierName = s.CashierName,
+        CashierName = cashierName ?? s.CashierName,
         LocationId = s.LocationId,
         LocationName = s.Location?.LocationName,
         BusinessDate = s.BusinessDate,
@@ -115,6 +131,7 @@ public class StartingCashController : ControllerBase
     {
         var (authUserId, name, user) = Identity(cashierName);
         var loc = ResolveLocation(user, locationId);
+        if (PosRoleAuthorization.RequireLocationAccess(HttpContext, loc) is { } denied) return denied;
         if (!loc.HasValue) return Ok(new { entry = (StartingCashDto?)null });
 
         var today = Today();
@@ -150,6 +167,7 @@ public class StartingCashController : ControllerBase
 
         var (authUserId, name, user) = Identity(dto.CashierName);
         var loc = ResolveLocation(user, dto.LocationId);
+        if (PosRoleAuthorization.RequireLocationAccess(HttpContext, loc) is { } denied) return denied;
         if (!loc.HasValue) return BadRequest("A branch is required to record starting cash.");
 
         var location = await _db.Locations.FirstOrDefaultAsync(l => l.LocationId == loc.Value);
@@ -200,7 +218,8 @@ public class StartingCashController : ControllerBase
     public async Task<IActionResult> GetAll(
         [FromQuery] int? locationId,
         [FromQuery] DateOnly? from,
-        [FromQuery] DateOnly? to)
+        [FromQuery] DateOnly? to,
+        CancellationToken cancellationToken)
     {
         if (RequireManager() is { } denied) return denied;
 
@@ -212,40 +231,11 @@ public class StartingCashController : ControllerBase
 
         if (!isSuperUser)
         {
-            var authUserId = user == null || user.Id == Guid.Empty ? null : user.Id.ToString();
-            var assignedLocationIds = new List<int>();
+            var assignedLocationIds = user?.LocationIds ?? Array.Empty<int>();
+            if (locationId.HasValue && !assignedLocationIds.Contains(locationId.Value))
+                return StatusCode(StatusCodes.Status403Forbidden, new { message = "You do not have access to this location." });
 
-            if (user?.LocationId.HasValue == true)
-            {
-                assignedLocationIds.Add(user.LocationId.Value);
-            }
-
-            if (!string.IsNullOrEmpty(authUserId))
-            {
-                var dbLocs = await _db.PosUserLocations
-                    .Where(ul => ul.AuthUserId == authUserId)
-                    .Select(ul => ul.LocationId)
-                    .ToListAsync();
-                assignedLocationIds.AddRange(dbLocs);
-            }
-
-            assignedLocationIds = assignedLocationIds.Distinct().ToList();
-
-            if (assignedLocationIds.Count > 0)
-            {
-                if (locationId.HasValue && assignedLocationIds.Contains(locationId.Value))
-                {
-                    query = query.Where(s => s.LocationId == locationId.Value);
-                }
-                else
-                {
-                    query = query.Where(s => assignedLocationIds.Contains(s.LocationId));
-                }
-            }
-            else if (locationId.HasValue)
-            {
-                query = query.Where(s => s.LocationId == locationId.Value);
-            }
+            query = query.Where(entry => assignedLocationIds.Contains(entry.LocationId));
         }
         else if (locationId.HasValue)
         {
@@ -260,6 +250,30 @@ public class StartingCashController : ControllerBase
             .Take(500)
             .ToListAsync();
 
-        return Ok(entries.Select(Map).ToList());
+        IReadOnlyList<PortalPosUser> portalUsers;
+        try
+        {
+            portalUsers = await _portalUserDirectory.ListEligiblePosUsersAsync(cancellationToken);
+        }
+        catch (PortalDirectoryNotConfiguredException)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new
+            {
+                message = "The read-only Enterprise Portal staff directory is not configured for api-pos.",
+            });
+        }
+
+        var usersById = portalUsers.ToDictionary(user => user.Id, StringComparer.Ordinal);
+        var usersByUsername = portalUsers.ToDictionary(user => user.Username, StringComparer.OrdinalIgnoreCase);
+
+        return Ok(entries.Select(entry =>
+        {
+            var portalUser = usersById.GetValueOrDefault(entry.AuthUserId)
+                ?? usersByUsername.GetValueOrDefault(entry.CashierName);
+            var displayName = portalUser is null
+                ? null
+                : $"{portalUser.FirstName} {portalUser.LastName}".Trim();
+            return Map(entry, string.IsNullOrWhiteSpace(displayName) ? null : displayName);
+        }).ToList());
     }
 }

@@ -50,8 +50,10 @@ public class CurrentUserContext
     public Guid Id { get; set; }
     public string? PortalUserId { get; set; }
     public string Username { get; set; } = string.Empty;
+    public string? DisplayName { get; set; }
     public string[] Apps { get; set; } = Array.Empty<string>();
     public int? LocationId { get; set; }
+    public int[] LocationIds { get; set; } = Array.Empty<int>();
     public string? SubRole { get; set; }
 
     /// <summary>br-auth role string (e.g. "Staff/Employee", "Super Admin").</summary>
@@ -124,8 +126,33 @@ public static class HttpContextExtensions
 
         if (user != null)
         {
+            var portalDb = context.RequestServices.GetService<PosDbContext>();
+            if (!user.IsSuperUser && !string.IsNullOrWhiteSpace(user.PortalUserId) && portalDb != null)
+            {
+                var assignments = portalDb.PosUserLocations
+                    .Where(assignment => assignment.AuthUserId == user.PortalUserId)
+                    .OrderByDescending(assignment => assignment.IsPrimary)
+                    .ThenBy(assignment => assignment.Id)
+                    .Select(assignment => new { assignment.LocationId, assignment.IsPrimary })
+                    .ToArray();
+                user.LocationIds = assignments.Select(assignment => assignment.LocationId).Distinct().ToArray();
+
+                if (context.Request.Headers.TryGetValue("X-Location-Id", out var selectedLocation) &&
+                    int.TryParse(selectedLocation.ToString(), out var selectedId) &&
+                    user.LocationIds.Contains(selectedId))
+                {
+                    user.LocationId = selectedId;
+                }
+                else
+                {
+                    user.LocationId = assignments.FirstOrDefault()?.LocationId;
+                }
+            }
+
             // Resolve location from X-Location-Id request header if not already in token
-            if (!user.LocationId.HasValue && context.Request.Headers.TryGetValue("X-Location-Id", out var locHeader))
+            if (string.IsNullOrWhiteSpace(user.PortalUserId) &&
+                !user.LocationId.HasValue &&
+                context.Request.Headers.TryGetValue("X-Location-Id", out var locHeader))
             {
                 if (int.TryParse(locHeader.ToString(), out var headerLocId) && headerLocId > 0)
                 {
@@ -134,7 +161,7 @@ public static class HttpContextExtensions
             }
 
             // Resolve location from PosUserLocations database table for real users if still not populated
-            if (!user.LocationId.HasValue && user.Id != Guid.Empty)
+            if (string.IsNullOrWhiteSpace(user.PortalUserId) && !user.LocationId.HasValue && user.Id != Guid.Empty)
             {
                 try
                 {
@@ -146,6 +173,7 @@ public static class HttpContextExtensions
                         if (loc != null)
                         {
                             user.LocationId = loc.LocationId;
+                            user.LocationIds = [loc.LocationId];
                         }
                     }
                 }
