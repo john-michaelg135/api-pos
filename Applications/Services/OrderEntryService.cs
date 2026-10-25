@@ -440,6 +440,8 @@ public class OrderEntryService : IOrderEntryService
 
         var orderNumber = await GenerateOrderNumberAsync(now);
 
+        var isCash = string.Equals(dto.PaymentMethod, "Cash", StringComparison.OrdinalIgnoreCase);
+
         var order = new Order
         {
             OrderNumber = orderNumber,
@@ -451,9 +453,11 @@ public class OrderEntryService : IOrderEntryService
             CustomVariationNotes = dto.CustomVariationNotes,
             SubmittedBy = dto.SubmittedBy,
             PaymentMethod = dto.PaymentMethod,
-            PaymentStatus = "Pending",      // Institutional orders start as Pending (COD)
+            PaymentStatus = isCash ? "Paid" : "Pending",      // Cash is Paid, COD starts as Pending
             OrderStatus = "Processing",     // Requires fulfillment before completion
             TotalAmount = 0,
+            AmountTendered = dto.AmountTendered,
+            ChangeAmount = dto.ChangeAmount,
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -488,6 +492,20 @@ public class OrderEntryService : IOrderEntryService
         await _db.OrderItems.AddRangeAsync(orderItems);
         order.TotalAmount = totalAmount;
         order.UpdatedAt = DateTime.UtcNow;
+
+        if (isCash)
+        {
+            var payment = new Payment
+            {
+                OrderId = order.OrderId,
+                PaymentChannel = dto.PaymentMethod,
+                AmountPaid = totalAmount,
+                PaymentStatus = "Success",
+                PaidAt = now
+            };
+            await _db.Payments.AddAsync(payment);
+        }
+
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
 

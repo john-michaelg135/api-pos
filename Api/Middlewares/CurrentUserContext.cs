@@ -48,6 +48,7 @@ public enum PosAction
 public class CurrentUserContext
 {
     public Guid Id { get; set; }
+    public string? PortalUserId { get; set; }
     public string Username { get; set; } = string.Empty;
     public string[] Apps { get; set; } = Array.Empty<string>();
     public int? LocationId { get; set; }

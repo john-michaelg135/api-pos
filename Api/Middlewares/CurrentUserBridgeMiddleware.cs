@@ -40,6 +40,13 @@ public class CurrentUserBridgeMiddleware
             return;
         }
 
+        if (context.Items.TryGetValue("CurrentUser", out var portalUser) &&
+            portalUser is CurrentUserContext)
+        {
+            await _next(context);
+            return;
+        }
+
         if (context.User?.Identity?.IsAuthenticated != true)
         {
             _logger.LogWarning("US-POS-023: Request to {Path} rejected — no valid bearer token.", path);

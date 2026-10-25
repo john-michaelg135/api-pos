@@ -35,15 +35,27 @@ services:
       # ── Auth (Centralized Auth Service, owned by another team) ──
       # Starts DISABLED so the backend can deploy and run migrations without the
       # auth service URL or the frontend in place. When you have the production
-      # auth URL, set AUTH_MIDDLEWARE_ENABLED=true and fill JWT_AUTHORITY, then
+      # legacy auth URL, set AUTH_MIDDLEWARE_ENABLED=true and fill JWT_AUTHORITY, then
       # redeploy. With it true, JwtBearer validates every request's token against
-      # JWT_AUTHORITY's OIDC keys and RBAC is enforced.
+      # JWT_AUTHORITY's OIDC keys and legacy bearer RBAC is enforced. Location
+      # APIs separately require Enterprise Portal session validation.
       - key: AUTH_MIDDLEWARE_ENABLED
         value: "false"
       # Public HTTPS root of the Auth Service. Example: https://auth.example.com
       # Fill this in (and flip the flag above) when auth is ready.
       - key: JWT_AUTHORITY
         value: ""
+
+      # ── Enterprise Portal session validation (POS location APIs) ──
+      - key: PORTAL_URL
+        value: https://br-auth-three.vercel.app
+      - key: PORTAL_SYSTEM_NAME
+        value: POS
+      - key: PORTAL_SYSTEM_SECRET
+        sync: false
+      # Read-only credential for listing active POS users from the Portal database.
+      - key: PORTAL_DATABASE_URL
+        sync: false
 
       # ── CORS ──
       # Public origin of the deployed web-pos (Vercel). No trailing slash.

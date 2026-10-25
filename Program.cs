@@ -52,6 +52,11 @@ builder.Services.AddSignalR(); // US-POS-025
 builder.Services.AddScoped<IProductCatalogService, ProductCatalogService>();
 builder.Services.AddScoped<IOrderEntryService, OrderEntryService>();
 builder.Services.AddScoped<ILocationService, LocationService>();
+builder.Services.AddScoped<IPortalUserDirectory, PortalUserDirectory>();
+builder.Services.AddHttpClient("EnterprisePortal", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(5);
+});
 
 // Sprint 2
 builder.Services.AddScoped<IOrderManagementService, OrderManagementService>();
@@ -286,6 +291,10 @@ app.Use(async (context, next) =>
 });
 
 app.UseCors("AllowFrontend");
+
+// Location endpoints use the Enterprise Portal's opaque session and live
+// module validation; the legacy JWT bridge remains available for other APIs.
+app.UseMiddleware<PortalSessionMiddleware>();
 
 // US-POS-023: Authentication + RBAC (br-auth guide Step 13).
 // JwtBearer validates the token signature against the Auth Service's OIDC keys.

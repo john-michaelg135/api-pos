@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Applications.Interfaces;
+using Applications.Services;
+using Api.Middlewares;
 using Api.Contracts.Location;
 
 namespace Api.Controllers;
@@ -10,10 +12,14 @@ namespace Api.Controllers;
 public class LocationController : ControllerBase
 {
     private readonly ILocationService _locationService;
+    private readonly IPortalUserDirectory _portalUserDirectory;
 
-    public LocationController(ILocationService locationService)
+    public LocationController(
+        ILocationService locationService,
+        IPortalUserDirectory portalUserDirectory)
     {
         _locationService = locationService;
+        _portalUserDirectory = portalUserDirectory;
     }
 
     // GET api-pos/locations
@@ -63,6 +69,71 @@ public class LocationController : ControllerBase
         return Ok(assignments);
     }
 
+    // GET api-pos/locations/staff
+    [HttpGet("staff")]
+    public async Task<IActionResult> GetStaff(CancellationToken cancellationToken)
+    {
+        IReadOnlyList<PortalPosUser> staff;
+        try
+        {
+            staff = await _portalUserDirectory.ListEligiblePosUsersAsync(cancellationToken);
+        }
+        catch (PortalDirectoryNotConfiguredException)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new
+            {
+                message = "The read-only Enterprise Portal staff directory is not configured for api-pos.",
+            });
+        }
+
+        var assignments = await _locationService.GetAllUserLocationsAsync();
+        var assignmentsByUser = assignments
+            .GroupBy(assignment => assignment.AuthUserId)
+            .ToDictionary(group => group.Key, group => group.ToArray());
+
+        return Ok(new
+        {
+            users = staff.Select(user => new
+            {
+                authUserId = user.Id,
+                user.Username,
+                fullName = $"{user.FirstName} {user.LastName}".Trim(),
+                user.Email,
+                user.Role,
+                locations = assignmentsByUser.GetValueOrDefault(user.Id) ?? [],
+            }),
+        });
+    }
+
+    // GET api-pos/locations/mine
+    [HttpGet("mine")]
+    public async Task<IActionResult> GetMyLocations()
+    {
+        var user = HttpContext.GetCurrentUser();
+        if (user?.PortalUserId is not { Length: > 0 } userId)
+        {
+            return Unauthorized(new { message = "A valid Enterprise Portal user is required." });
+        }
+
+        if (user.IsSuperUser)
+        {
+            return Ok(new { scope = "all", locations = Array.Empty<UserLocationResponseDto>() });
+        }
+
+        var locations = await _locationService.GetUserLocationsAsync(userId);
+        return Ok(new
+        {
+            scope = "assigned",
+            locations = locations.Select(location => new
+            {
+                location.LocationId,
+                location.LocationName,
+                location.LocationType,
+                location.IsPrimary,
+            }),
+        });
+    }
+
     // GET api-pos/locations/user-locations/{authUserId}
     [HttpGet("user-locations/{authUserId}")]
     [ProducesResponseType(typeof(List<UserLocationResponseDto>), StatusCodes.Status200OK)]
@@ -83,11 +154,41 @@ public class LocationController : ControllerBase
         if (string.IsNullOrWhiteSpace(dto.AuthUserId)) return BadRequest("A user id is required.");
         if (dto.LocationId <= 0) return BadRequest("A valid locationId is required.");
 
+        var assignedBy = HttpContext.GetCurrentUser()?.PortalUserId;
+        if (string.IsNullOrWhiteSpace(assignedBy))
+        {
+            return Unauthorized(new { message = "A valid Enterprise Portal user is required." });
+        }
+
         try
         {
+            var targetUser = await _portalUserDirectory.FindEligiblePosUserAsync(
+                dto.AuthUserId,
+                HttpContext.RequestAborted);
+            if (targetUser is null)
+            {
+                return BadRequest(new { message = "Select an active user with POS access." });
+            }
+
+            var location = await _locationService.GetLocationForAssignmentAsync(dto.LocationId);
+            if (location is null)
+            {
+                return BadRequest(new { message = "Select an active location." });
+            }
+
+            dto.AssignedBy = assignedBy;
+            dto.IsPrimary = true;
             var assignment = await _locationService.AssignUserLocationAsync(dto);
             return CreatedAtAction(nameof(GetUserLocations), new { authUserId = dto.AuthUserId }, assignment);
         }
+        catch (PortalDirectoryNotConfiguredException)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new
+            {
+                message = "The read-only Enterprise Portal staff directory is not configured for api-pos.",
+            });
+        }
+
         catch (InvalidOperationException ex)
         {
             return BadRequest(ex.Message);

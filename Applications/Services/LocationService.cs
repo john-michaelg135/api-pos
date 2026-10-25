@@ -80,24 +80,36 @@ public class LocationService : ILocationService
         return assignments.Select(MapToUserLocationResponse).ToList();
     }
 
+    public async Task<LocationResponseDto?> GetLocationForAssignmentAsync(int locationId)
+    {
+        var location = await _db.Locations
+            .AsNoTracking()
+            .FirstOrDefaultAsync(item => item.LocationId == locationId && item.IsActive);
+
+        return location is null ? null : MapToResponse(location);
+    }
+
     public async Task<UserLocationResponseDto> AssignUserLocationAsync(AssignUserLocationDto dto)
     {
         var location = await _db.Locations.FindAsync(dto.LocationId)
             ?? throw new InvalidOperationException("Location not found.");
 
-        // Idempotent: reuse an existing assignment for this user+location.
+        var userAssignments = await _db.PosUserLocations
+            .Where(ul => ul.AuthUserId == dto.AuthUserId)
+            .ToListAsync();
         var existing = await _db.PosUserLocations
             .FirstOrDefaultAsync(ul => ul.AuthUserId == dto.AuthUserId && ul.LocationId == dto.LocationId);
 
         if (existing != null)
         {
+            _db.PosUserLocations.RemoveRange(userAssignments.Where(assignment => assignment.Id != existing.Id));
             existing.IsPrimary = dto.IsPrimary;
-            _db.PosUserLocations.Update(existing);
             await _db.SaveChangesAsync();
             existing.Location = location;
             return MapToUserLocationResponse(existing);
         }
 
+        _db.PosUserLocations.RemoveRange(userAssignments);
         var assignment = new PosUserLocation
         {
             AuthUserId = dto.AuthUserId,

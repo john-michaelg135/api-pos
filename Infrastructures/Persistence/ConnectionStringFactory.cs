@@ -25,14 +25,16 @@ public static class ConnectionStringFactory
         var databaseUrl = Environment.GetEnvironmentVariable("DATABASE_URL");
         if (!string.IsNullOrWhiteSpace(databaseUrl))
         {
-            return NormalizeDatabaseUrl(databaseUrl.Trim());
+            return Normalize(databaseUrl);
         }
 
         return BuildFromSplitVars();
     }
 
-    private static string NormalizeDatabaseUrl(string databaseUrl)
+    public static string Normalize(string databaseUrl)
     {
+        databaseUrl = databaseUrl.Trim();
+
         // Already an Npgsql key=value string (no URI scheme) — enrich and return.
         if (!databaseUrl.Contains("://", StringComparison.Ordinal))
         {

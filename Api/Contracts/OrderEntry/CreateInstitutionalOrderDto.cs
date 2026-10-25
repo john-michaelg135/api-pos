@@ -7,6 +7,8 @@ public class CreateInstitutionalOrderDto
     public string? ContactPerson { get; set; }
     public string? CustomVariationNotes { get; set; }
     public string PaymentMethod { get; set; } = "COD";
+    public decimal? AmountTendered { get; set; }
+    public decimal? ChangeAmount { get; set; }
     public int? SubmittedBy { get; set; }
     public List<CartItemDto> Items { get; set; } = new();
 }
