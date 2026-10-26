@@ -7,6 +7,8 @@ public class CreateInstitutionalOrderDto
     public string? ContactPerson { get; set; }
     public string? CustomVariationNotes { get; set; }
     public string PaymentMethod { get; set; } = "COD";
+    // GCash only: customer pays a 50% downpayment now and the balance later.
+    public bool IsPartialPayment { get; set; }
     public decimal? AmountTendered { get; set; }
     public decimal? ChangeAmount { get; set; }
     public int? SubmittedBy { get; set; }

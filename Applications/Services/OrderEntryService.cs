@@ -483,9 +483,39 @@ public class OrderEntryService : IOrderEntryService
                 throw new InvalidOperationException($"Product variation with ID {cartItem.VariationId} not found.");
         }
 
-        var orderNumber = await GenerateOrderNumberAsync(now);
-
         var isCash = string.Equals(dto.PaymentMethod, "Cash", StringComparison.OrdinalIgnoreCase);
+        var isGcash = string.Equals(dto.PaymentMethod, "GCash", StringComparison.OrdinalIgnoreCase);
+
+        if (dto.IsPartialPayment && !isGcash)
+            throw new InvalidOperationException("Partial payment is only available for GCash.");
+
+        // Price the cart before creating the order so a failed payment check leaves no orphan order.
+        decimal totalAmount = 0;
+        var pricedItems = new List<(CartItemDto Item, decimal UnitPrice, decimal Subtotal)>();
+        foreach (var cartItem in dto.Items)
+        {
+            var activePrice = await _db.ProductPrices
+                .Where(pp => pp.VariationId == cartItem.VariationId && pp.IsActive)
+                .FirstOrDefaultAsync();
+
+            var unitPrice = activePrice?.Price ?? 0;
+            var subtotal = unitPrice * cartItem.Quantity;
+            totalAmount += subtotal;
+            pricedItems.Add((cartItem, unitPrice, subtotal));
+        }
+
+        if (isCash && (dto.AmountTendered ?? 0) < totalAmount)
+            throw new InvalidOperationException("Amount paid is not enough. Cash payments must cover the full order total.");
+
+        // Cash and full GCash are settled up front and go straight to Paid (ready for shipment).
+        // A GCash downpayment keeps the order in Processing until the balance is confirmed.
+        // COD is collected later.
+        var isPartial = isGcash && dto.IsPartialPayment;
+        var amountPaidNow = isCash || isGcash
+            ? (isPartial ? Math.Round(totalAmount * 0.5m, 2, MidpointRounding.AwayFromZero) : totalAmount)
+            : 0m;
+
+        var orderNumber = await GenerateOrderNumberAsync(now);
 
         var order = new Order
         {
@@ -497,12 +527,12 @@ public class OrderEntryService : IOrderEntryService
             ContactPerson = dto.ContactPerson,
             CustomVariationNotes = dto.CustomVariationNotes,
             SubmittedBy = dto.SubmittedBy,
-            PaymentMethod = dto.PaymentMethod,
-            PaymentStatus = isCash ? "Paid" : "Pending",      // Cash is Paid, COD starts as Pending
-            OrderStatus = "Processing",     // Requires fulfillment before completion
-            TotalAmount = 0,
-            AmountTendered = dto.AmountTendered,
-            ChangeAmount = dto.ChangeAmount,
+            PaymentMethod = isGcash ? "GCash" : dto.PaymentMethod,
+            PaymentStatus = isPartial ? "Partial" : (isCash || isGcash ? "Paid" : "Pending"),
+            OrderStatus = isPartial || !(isCash || isGcash) ? "Processing" : "Paid",
+            TotalAmount = totalAmount,
+            AmountTendered = isCash ? dto.AmountTendered : null,
+            ChangeAmount = isCash ? dto.AmountTendered - totalAmount : null,
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -510,48 +540,42 @@ public class OrderEntryService : IOrderEntryService
         await _db.Orders.AddAsync(order);
         await _db.SaveChangesAsync();
 
-        decimal totalAmount = 0;
-        var orderItems = new List<OrderItem>();
-
-        foreach (var cartItem in dto.Items)
+        await _db.OrderItems.AddRangeAsync(pricedItems.Select(p => new OrderItem
         {
-            var activePrice = await _db.ProductPrices
-                .Where(pp => pp.VariationId == cartItem.VariationId && pp.IsActive)
-                .FirstOrDefaultAsync();
+            OrderId = order.OrderId,
+            VariationId = p.Item.VariationId,
+            Quantity = p.Item.Quantity,
+            UnitPrice = p.UnitPrice,
+            Subtotal = p.Subtotal,
+            CreatedAt = now
+        }));
 
-            var unitPrice = activePrice?.Price ?? 0;
-            var subtotal = unitPrice * cartItem.Quantity;
-            totalAmount += subtotal;
-
-            orderItems.Add(new OrderItem
+        if (amountPaidNow > 0)
+        {
+            await _db.Payments.AddAsync(new Payment
             {
                 OrderId = order.OrderId,
-                VariationId = cartItem.VariationId,
-                Quantity = cartItem.Quantity,
-                UnitPrice = unitPrice,
-                Subtotal = subtotal,
-                CreatedAt = now
+                PaymentChannel = order.PaymentMethod,
+                AmountPaid = amountPaidNow,
+                PaymentStatus = "Success",
+                PaidAt = now
             });
         }
 
-        await _db.OrderItems.AddRangeAsync(orderItems);
-        order.TotalAmount = totalAmount;
-        order.UpdatedAt = DateTime.UtcNow;
-
-        if (isCash)
+        await _db.OrderStatusHistories.AddAsync(new OrderStatusHistory
         {
-            var payment = new Payment
-            {
-                OrderId = order.OrderId,
-                PaymentChannel = dto.PaymentMethod,
-                AmountPaid = totalAmount,
-                PaymentStatus = "Success",
-                PaidAt = now
-            };
-            await _db.Payments.AddAsync(payment);
-        }
+            OrderId = order.OrderId,
+            OldStatus = "New",
+            NewStatus = order.OrderStatus,
+            ChangedBy = dto.SubmittedBy,
+            Remarks = isPartial
+                ? $"50% GCash downpayment of ₱{amountPaidNow:N2} confirmed in wallet. Balance of ₱{totalAmount - amountPaidNow:N2} outstanding."
+                : isGcash
+                    ? $"Full GCash payment of ₱{amountPaidNow:N2} confirmed in wallet."
+                    : isCash ? $"Paid in full with cash (₱{amountPaidNow:N2})." : null,
+            CreatedAt = now
+        });
 
-        _db.Orders.Update(order);
         await _db.SaveChangesAsync();
 
         return (await BuildOrderResponse(order.OrderId))!;

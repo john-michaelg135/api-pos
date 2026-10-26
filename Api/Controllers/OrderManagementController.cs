@@ -126,6 +126,28 @@ public class OrderManagementController : ControllerBase
         }
     }
 
+    // ── Institutional GCash downpayment: confirm remaining balance ──
+
+    // PUT api-pos/order-management/orders/{orderId}/complete-payment
+    [HttpPut("orders/{orderId:int}/complete-payment")]
+    [ProducesResponseType(typeof(OrderManagementResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> CompletePayment(int orderId, [FromQuery] int confirmedBy = 1)
+    {
+        if (PosRoleAuthorization.RequireCashierOrManager(HttpContext) is { } denied) return denied;
+        try
+        {
+            var order = await _orderManagementService.CompletePaymentAsync(orderId, confirmedBy);
+            if (order == null) return NotFound($"Order with ID {orderId} not found.");
+            return Ok(order);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
+
     // ── EC-012: Order tracking for progress bar ──
 
     // GET api-pos/order-management/orders/{orderId}/tracking

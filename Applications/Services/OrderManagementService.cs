@@ -329,10 +329,16 @@ public class OrderManagementService : IOrderManagementService
             return MapToResponse(order);
         }
 
-        var allowedStatuses = new[] { "Pending", "Awaiting Stock", "Processing", "Shipped", "Delivered", "Completed", "Refund Requested", "Refunded", "Cancelled" };
+        var allowedStatuses = new[] { "Pending", "Awaiting Stock", "Processing", "Paid", "Shipped", "Delivered", "Completed", "Refund Requested", "Refunded", "Cancelled" };
         if (!allowedStatuses.Contains(targetStatus, System.StringComparer.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException($"Invalid target status '{targetStatus}'.");
+        }
+
+        var requiresFullPayment = new[] { "Paid", "Shipped", "Delivered", "Completed" };
+        if (order.PaymentStatus == "Partial" && requiresFullPayment.Contains(targetStatus, System.StringComparer.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"Order {order.OrderNumber} still has an unpaid balance. Complete the remaining GCash payment first.");
         }
 
         var now = DateTime.UtcNow;
@@ -417,6 +423,62 @@ public class OrderManagementService : IOrderManagementService
                 await _db.Payments.AddAsync(payment);
             }
         }
+
+        _db.Orders.Update(order);
+        await _db.SaveChangesAsync();
+
+        return MapToResponse(order);
+    }
+
+    // ────────────────────────────────────────────────────
+    // Institutional GCash downpayment: confirm remaining balance
+    // ────────────────────────────────────────────────────
+
+    public async Task<OrderManagementResponseDto?> CompletePaymentAsync(int orderId, int confirmedBy)
+    {
+        var order = await _db.Orders
+            .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.ProductVariation)
+                    .ThenInclude(v => v.Product)
+            .Include(o => o.Payments)
+            .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
+            .FirstOrDefaultAsync(o => o.OrderId == orderId);
+        if (order == null) return null;
+        EnsureCurrentUserCanAccessOrderLocation(order);
+
+        if (order.PaymentStatus != "Partial")
+            throw new InvalidOperationException($"Order {order.OrderNumber} has no outstanding balance.");
+
+        if (order.OrderStatus is "Cancelled" or "Void Requested" or "Voided" or "Refund Requested" or "Refunded")
+            throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus} and can no longer be paid.");
+
+        var alreadyPaid = order.Payments.Where(p => p.PaymentStatus == "Success").Sum(p => p.AmountPaid);
+        var balance = order.TotalAmount - alreadyPaid;
+        var now = DateTime.UtcNow;
+
+        if (balance > 0)
+        {
+            order.Payments.Add(new Payment
+            {
+                OrderId        = order.OrderId,
+                AmountPaid     = balance,
+                PaymentChannel = order.PaymentMethod,
+                PaymentStatus  = "Success",
+                PaidAt         = now
+            });
+        }
+
+        var currentStatus = order.OrderStatus;
+        order.PaymentStatus = "Paid";
+        order.UpdatedAt = now;
+
+        // Fully paid institutional orders move to Paid (ready for shipment).
+        if (currentStatus == "Processing")
+            order.OrderStatus = "Paid";
+
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, order.OrderStatus, confirmedBy,
+            $"Remaining GCash balance of ₱{balance:N2} confirmed in wallet. Order fully paid.");
 
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();

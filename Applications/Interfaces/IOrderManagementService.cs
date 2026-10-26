@@ -17,6 +17,7 @@ public interface IOrderManagementService
     
     // Generic order status update (Order Manager only)
     Task<OrderManagementResponseDto?> UpdateOrderStatusAsync(int orderId, UpdateOrderStatusDto dto);
+    Task<OrderManagementResponseDto?> CompletePaymentAsync(int orderId, int confirmedBy);
 
     // EC-012: Order progress tracking
     Task<OrderTrackingDto?> GetOrderTrackingAsync(int orderId);
