@@ -36,6 +36,21 @@ public static class PosRoleAuthorization
         return null;
     }
 
+    public static IActionResult? RequireAdministrator(HttpContext context)
+    {
+        var user = context.GetCurrentUser();
+        if (user is null)
+            return new UnauthorizedObjectResult(new { message = "A valid POS session is required." });
+
+        if (!IsAdministrator(user))
+            return new ObjectResult(new { message = "Only the owner may view this." })
+            {
+                StatusCode = StatusCodes.Status403Forbidden,
+            };
+
+        return null;
+    }
+
     public static IActionResult? RequireCashierOrManager(HttpContext context)
     {
         var user = context.GetCurrentUser();

@@ -9,6 +9,8 @@ public sealed class PortalSessionMiddleware
 {
     private const string SessionCookie = "pos_session";
     private const string LocationsPath = "/api-pos/locations";
+    private const string DashboardPath = "/api-pos/dashboard";
+    private const string DashboardModule = "Dashboard";
     private const string LocationManagementModule = "Location Management";
     private const string SalesProcessingModule = "Sales Processing";
     private const string OrderManagementModule = "Order Management";
@@ -79,6 +81,8 @@ public sealed class PortalSessionMiddleware
         }
 
         var isMineRequest = IsMineRequest(context.Request.Path);
+        // Super Admin and CEO open the Dashboard whatever the Portal granted, so any POS Module proves who they are.
+        var isDashboardRequest = context.Request.Path.StartsWithSegments(DashboardPath, StringComparison.OrdinalIgnoreCase);
         var isLocationManagementRequest =
             context.Request.Path.StartsWithSegments(LocationsPath, StringComparison.OrdinalIgnoreCase) &&
             !isMineRequest &&
@@ -86,6 +90,8 @@ public sealed class PortalSessionMiddleware
               context.Request.Path.Equals(LocationsPath, StringComparison.OrdinalIgnoreCase));
         string[] modulesToValidate = isMineRequest
             ? PosModules
+            : isDashboardRequest
+            ? [DashboardModule, .. PosModules]
             : [requiredModule];
         PortalValidationResponse? validation = null;
         var validatedModule = string.Empty;
@@ -104,7 +110,7 @@ public sealed class PortalSessionMiddleware
                 request.Headers.Authorization = new AuthenticationHeaderValue("Basic", credentials);
 
                 using var response = await client.SendAsync(request, context.RequestAborted);
-                if (response.StatusCode == System.Net.HttpStatusCode.Forbidden && isMineRequest)
+                if (response.StatusCode == System.Net.HttpStatusCode.Forbidden && (isMineRequest || isDashboardRequest))
                 {
                     continue;
                 }
@@ -175,6 +181,12 @@ public sealed class PortalSessionMiddleware
             return;
         }
 
+        if (isDashboardRequest && !AdministratorRoles.Contains(validation.Staff.Role))
+        {
+            await WriteErrorAsync(context, StatusCodes.Status403Forbidden, "Only the owner may view the Dashboard.");
+            return;
+        }
+
         if (isLocationManagementRequest && !AdministratorRoles.Contains(validation.Staff.Role))
         {
             await WriteErrorAsync(context, StatusCodes.Status403Forbidden, "Only Super Admins and CEOs can manage locations.");
@@ -217,6 +229,8 @@ public sealed class PortalSessionMiddleware
             return LocationManagementModule;
         }
 
+        if (path.StartsWithSegments(DashboardPath, StringComparison.OrdinalIgnoreCase))
+            return DashboardModule;
         if (path.StartsWithSegments("/api-pos/order-entry/orders/ecommerce", StringComparison.OrdinalIgnoreCase))
             return null;
         if (path.StartsWithSegments("/api-pos/order-entry", StringComparison.OrdinalIgnoreCase))

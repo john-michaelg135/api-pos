@@ -38,12 +38,17 @@ public class AnalyticsService : IAnalyticsService
 
         var groupBy = filter.GroupBy?.ToLower() ?? "day";
 
+        // Group by the Philippine calendar (UTC+8), not UTC, so an evening sale lands on its own day.
         var grouped = orders
-            .GroupBy(o => groupBy switch
+            .GroupBy(o =>
             {
-                "week"  => $"{o.CreatedAt:yyyy}-W{System.Globalization.ISOWeek.GetWeekOfYear(o.CreatedAt):D2}",
-                "month" => o.CreatedAt.ToString("yyyy-MM"),
-                _       => o.CreatedAt.ToString("yyyy-MM-dd")   // default: day
+                var local = ToManila(o.CreatedAt);
+                return groupBy switch
+                {
+                    "week"  => $"{System.Globalization.ISOWeek.GetYear(local)}-W{System.Globalization.ISOWeek.GetWeekOfYear(local):D2}",
+                    "month" => local.ToString("yyyy-MM"),
+                    _       => local.ToString("yyyy-MM-dd")   // default: day
+                };
             })
             .OrderBy(g => g.Key)
             .Select(g => new RevenueSummaryDto
@@ -77,7 +82,9 @@ public class AnalyticsService : IAnalyticsService
             .ToListAsync();
 
         return orders
-            .GroupBy(o => o.Location?.LocationName ?? "Unknown")
+            .GroupBy(o => o.Location == null ? "Unknown"
+                : o.Location.LocationType == "Commissary" ? $"{o.Location.LocationName} (online orders)"
+                : o.Location.LocationName)
             .OrderByDescending(g => g.Sum(o => o.TotalAmount))
             .Select(g => new SalesBreakdownDto
             {
@@ -155,6 +162,8 @@ public class AnalyticsService : IAnalyticsService
     // ────────────────────────────────────────────────────
     // Private helpers
     // ────────────────────────────────────────────────────
+
+    private static DateTime ToManila(DateTime utc) => utc.AddHours(8);
 
     private IQueryable<Domains.Entities.Order> ApplyCommonFilters(
         IQueryable<Domains.Entities.Order> query,

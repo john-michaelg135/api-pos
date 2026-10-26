@@ -62,6 +62,7 @@ builder.Services.AddHttpClient("EnterprisePortal", client =>
 builder.Services.AddScoped<IOrderManagementService, OrderManagementService>();
 builder.Services.AddScoped<IInventoryService, InventoryService>();
 builder.Services.AddScoped<IAnalyticsService, AnalyticsService>();
+builder.Services.AddScoped<IDashboardService, DashboardService>(); // Owner dashboard
 
 // Sprint 3
 builder.Services.AddScoped<IRefundService, RefundService>();
