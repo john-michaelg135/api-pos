@@ -40,6 +40,8 @@ public class StartingCashDto
     public decimal? ExpectedCash { get; set; }
     public decimal? CashVariance { get; set; }
     public decimal? CashShortage { get; set; }
+    /// <summary>Closed by the system at the end of the business day, not by a cashier.</summary>
+    public bool AutoClosed { get; set; }
 }
 
 /// <summary>
@@ -54,15 +56,18 @@ public class StartingCashController : ControllerBase
 
     private readonly PosDbContext _db;
     private readonly IPortalUserDirectory _portalUserDirectory;
+    private readonly IShiftAutoCloseService _shiftAutoClose;
     private readonly bool _authEnabled;
 
     public StartingCashController(
         PosDbContext db,
         IConfiguration configuration,
-        IPortalUserDirectory portalUserDirectory)
+        IPortalUserDirectory portalUserDirectory,
+        IShiftAutoCloseService shiftAutoClose)
     {
         _db = db;
         _portalUserDirectory = portalUserDirectory;
+        _shiftAutoClose = shiftAutoClose;
         _authEnabled = string.Equals(
             configuration["AUTH_MIDDLEWARE_ENABLED"], "true",
             StringComparison.OrdinalIgnoreCase);
@@ -154,6 +159,7 @@ public class StartingCashController : ControllerBase
         CashShortage = s.EndShiftAmount.HasValue && s.ExpectedCash.HasValue
             ? Math.Max(s.ExpectedCash.Value - s.EndShiftAmount.Value, 0)
             : null,
+        AutoClosed = s.AutoClosed,
     };
 
     // GET api-pos/starting-cash/today?locationId=1&cashierName=Jane → { entry: {...} | null }
@@ -315,6 +321,9 @@ public class StartingCashController : ControllerBase
         CancellationToken cancellationToken)
     {
         if (RequireManager() is { } denied) return denied;
+
+        // Close any past shift nobody ended, even if the background sweep hasn't run (e.g. the host slept).
+        await _shiftAutoClose.CloseOverdueShiftsAsync(cancellationToken);
 
         // Branch managers are strictly limited to their own branch; super users see all with filtering.
         var user = HttpContext.GetCurrentUser();

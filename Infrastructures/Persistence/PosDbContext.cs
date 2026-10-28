@@ -366,6 +366,7 @@ public class PosDbContext : DbContext
             entity.Property(e => e.SuccessfulSalesAmount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.ApprovedRefundAmount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.ExpectedCash).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.AutoClosed).IsRequired();
 
             entity.HasIndex(e => new { e.AuthUserId, e.CashierName, e.LocationId, e.BusinessDate }).IsUnique();
             entity.HasIndex(e => e.BusinessDate);

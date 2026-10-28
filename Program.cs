@@ -70,6 +70,8 @@ builder.Services.AddScoped<IStockAdjustmentService, StockAdjustmentService>();
 builder.Services.AddScoped<IScmsIntegrationService, ScmsIntegrationService>();
 builder.Services.AddScoped<IReconciliationService, ReconciliationService>(); // POS↔SCM reconciliation
 builder.Services.AddHostedService<ReconciliationSweepBackgroundService>(); // auto-retry failed SCM status callbacks
+builder.Services.AddScoped<IShiftAutoCloseService, ShiftAutoCloseService>();
+builder.Services.AddHostedService<ShiftAutoCloseBackgroundService>(); // auto-close shifts nobody ended by end of day
 builder.Services.AddScoped<ICrmsQueryService, CrmsQueryService>();
 
 builder.Services.AddScoped<IXenditService, XenditService>();

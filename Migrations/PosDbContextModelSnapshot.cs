@@ -654,6 +654,9 @@ namespace api_pos.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
 
+                    b.Property<bool>("AutoClosed")
+                        .HasColumnType("boolean");
+
                     b.Property<DateOnly>("BusinessDate")
                         .HasColumnType("date");
 

@@ -28,5 +28,11 @@ public class StartingCash
     public decimal? ApprovedRefundAmount { get; set; }
     public decimal? ExpectedCash { get; set; }
 
+    /// <summary>
+    /// True when the system closed the shift at the end of its business day because no
+    /// cashier ended it; EndShiftAmount is then empty, as no cash was counted.
+    /// </summary>
+    public bool AutoClosed { get; set; }
+
     public Location? Location { get; set; }
 }
