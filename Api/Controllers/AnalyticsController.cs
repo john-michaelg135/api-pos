@@ -55,4 +55,13 @@ public class AnalyticsController : ControllerBase
         var breakdown = await _analyticsService.GetSalesByChannelAsync(filter);
         return Ok(breakdown);
     }
+
+    // GET api-pos/analytics/sales-report?dateFrom=&dateTo=&locationId=
+    [HttpGet("sales-report")]
+    [ProducesResponseType(typeof(SalesReportDto), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetSalesReport([FromQuery] AnalyticsFilterDto filter)
+    {
+        var report = await _analyticsService.GetSalesReportAsync(filter);
+        return Ok(report);
+    }
 }

@@ -11,4 +11,7 @@ public interface IAnalyticsService
     Task<List<SalesBreakdownDto>> GetSalesByLocationAsync(AnalyticsFilterDto filter);
     Task<List<SalesBreakdownDto>> GetSalesByVariationAsync(AnalyticsFilterDto filter);
     Task<List<SalesBreakdownDto>> GetSalesByChannelAsync(AnalyticsFilterDto filter);
+
+    // Company sales report: summary vs previous period plus breakdowns
+    Task<SalesReportDto> GetSalesReportAsync(AnalyticsFilterDto filter);
 }

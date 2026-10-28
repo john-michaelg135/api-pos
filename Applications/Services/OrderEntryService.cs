@@ -121,6 +121,8 @@ public class OrderEntryService : IOrderEntryService
         // Generate order number: ORD-YYYYMMDD-####
         var orderNumber = await GenerateOrderNumberAsync(now);
 
+        // In-store GCash is paid to the company wallet and checked by the cashier before
+        // confirming, like cash, so the sale completes immediately; no Xendit invoice is created.
         var isGcash = string.Equals(dto.PaymentMethod, "GCash", StringComparison.OrdinalIgnoreCase);
 
         // Create the order
@@ -132,11 +134,11 @@ public class OrderEntryService : IOrderEntryService
             LocationId = dto.LocationId,
             SubmittedBy = dto.SubmittedBy,
             PaymentMethod = dto.PaymentMethod,
-            PaymentStatus = isGcash ? "Pending" : "Paid",
-            OrderStatus = isGcash ? "Pending" : "Completed",
+            PaymentStatus = "Paid",
+            OrderStatus = "Completed",
             TotalAmount = 0,              // Will be calculated below
-            AmountTendered = dto.AmountTendered,
-            ChangeAmount = dto.ChangeAmount,
+            AmountTendered = isGcash ? null : dto.AmountTendered,
+            ChangeAmount = isGcash ? null : dto.ChangeAmount,
             CreatedAt = now,
             UpdatedAt = now,
             ContactPerson = dto.ContactPerson,
@@ -211,43 +213,15 @@ public class OrderEntryService : IOrderEntryService
 
         await _db.SaveChangesAsync();
 
-        if (isGcash)
+        await _db.Payments.AddAsync(new Payment
         {
-            try
-            {
-                var paymentUrl = await _xenditService.CreateInvoiceAsync(order.OrderNumber, order.TotalAmount, $"POS Order {order.OrderNumber}");
-                var payment = new Payment
-                {
-                    OrderId = order.OrderId,
-                    AmountPaid = order.TotalAmount,
-                    PaymentChannel = "GCash",
-                    PaymentStatus = "Pending",
-                    GatewayReferenceNumber = paymentUrl,
-                    PaidAt = now
-                };
-                await _db.Payments.AddAsync(payment);
-                await _db.SaveChangesAsync();
-            }
-            catch (Exception ex)
-            {
-                _db.OrderItems.RemoveRange(orderItems);
-                _db.Orders.Remove(order);
-                await _db.SaveChangesAsync();
-                throw new InvalidOperationException($"Failed to create Xendit payment link: {ex.Message}", ex);
-            }
-        }
-        else
-        {
-            await _db.Payments.AddAsync(new Payment
-            {
-                OrderId = order.OrderId,
-                AmountPaid = order.TotalAmount,
-                PaymentChannel = dto.PaymentMethod,
-                PaymentStatus = "Success",
-                PaidAt = now
-            });
-            await _db.SaveChangesAsync();
-        }
+            OrderId = order.OrderId,
+            AmountPaid = order.TotalAmount,
+            PaymentChannel = dto.PaymentMethod,
+            PaymentStatus = "Success",
+            PaidAt = now
+        });
+        await _db.SaveChangesAsync();
 
         // POS-011: Auto deduct stock per item at this location
         if (order.LocationId.HasValue)
