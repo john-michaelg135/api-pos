@@ -253,6 +253,115 @@ public class ProductCatalogService : IProductCatalogService
     }
 
     // ────────────────────────────────────────────────────
+    // SCMS Module 1: product & variation sync
+    // SCMS owns names, categories and SKUs; POS owns the selling price. New variations get
+    // no price, so they stay off the sales screen until a manager prices them.
+    // ────────────────────────────────────────────────────
+
+    public async Task<SyncProductResultDto> SyncProductFromScmsAsync(SyncProductDto dto)
+    {
+        ValidateSync(dto);
+        var now = DateTime.UtcNow;
+        var scmsId = dto.ScmsProductId.Trim();
+
+        // Match by SCMS ID; on the first sync, adopt an existing POS product of the same name
+        // (made before the integration) instead of creating a duplicate.
+        var product = await _db.Products.Include(p => p.Variations)
+                          .FirstOrDefaultAsync(p => p.ScmsProductId == scmsId)
+                      ?? await _db.Products.Include(p => p.Variations)
+                          .FirstOrDefaultAsync(p => p.ScmsProductId == null &&
+                                                    p.ProductName.ToLower() == dto.ProductName.Trim().ToLower());
+        if (product == null)
+        {
+            product = new Product();
+            _db.Products.Add(product);
+        }
+
+        product.ScmsProductId = scmsId;
+        product.ProductName = dto.ProductName.Trim();
+        product.ProductCategory = dto.ProductCategory.Trim();
+        product.ProductDescription = dto.ProductDescription;
+        product.ProductImage = dto.ProductImage;
+        product.IsActive = dto.IsActive;
+        product.SyncedAt = now;
+
+        var syncedVariations = new List<ProductVariation>();
+        foreach (var line in dto.Variations)
+        {
+            var sku = line.Sku.Trim();
+            var name = string.IsNullOrWhiteSpace(line.VariationName)
+                ? $"{sku}|{line.PackagingType.Trim()}|{line.Size.Trim()}"
+                : line.VariationName.Trim();
+
+            // Match by SKU anywhere in the catalog; otherwise a pre-integration variation of
+            // this product whose name starts with the SKU ("SKU|Packaging|Size") gets the SKU.
+            var variation = await _db.ProductVariations
+                                .FirstOrDefaultAsync(v => v.Sku != null && v.Sku.ToLower() == sku.ToLower())
+                            ?? product.Variations.FirstOrDefault(v =>
+                                v.Sku == null && v.VariationName.StartsWith(sku + "|", StringComparison.OrdinalIgnoreCase));
+            if (variation == null)
+            {
+                variation = new ProductVariation();
+                product.Variations.Add(variation);
+            }
+            else if (variation.ProductId != product.ProductId && product.ProductId != 0)
+            {
+                variation.ProductId = product.ProductId; // SCMS moved this SKU to another product
+            }
+
+            variation.Sku = sku;
+            variation.VariationName = name;
+            variation.IsActive = line.IsActive;
+            variation.SyncedAt = now;
+            syncedVariations.Add(variation);
+        }
+
+        await _db.SaveChangesAsync();
+
+        var syncedIds = syncedVariations.Select(v => v.VariationId).ToList();
+        var priced = await _db.ProductPrices
+            .Where(pp => syncedIds.Contains(pp.VariationId) && pp.IsActive && pp.Price > 0)
+            .Select(pp => pp.VariationId)
+            .Distinct()
+            .CountAsync();
+
+        return new SyncProductResultDto
+        {
+            ProductId = product.ProductId,
+            ScmsProductId = scmsId,
+            SyncedVariationsCount = syncedVariations.Count,
+            PendingPricingCount = syncedVariations.Count - priced,
+        };
+    }
+
+    private static void ValidateSync(SyncProductDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(dto.ScmsProductId)) throw new InvalidOperationException("scmsProductId is required.");
+        if (dto.ScmsProductId.Trim().Length > 100) throw new InvalidOperationException("scmsProductId must be 100 characters or fewer.");
+        if (string.IsNullOrWhiteSpace(dto.ProductName)) throw new InvalidOperationException("productName is required.");
+        if (dto.ProductName.Trim().Length > 150) throw new InvalidOperationException("productName must be 150 characters or fewer.");
+        if (string.IsNullOrWhiteSpace(dto.ProductCategory)) throw new InvalidOperationException("productCategory is required.");
+        if (dto.ProductCategory.Trim().Length > 100) throw new InvalidOperationException("productCategory must be 100 characters or fewer.");
+        if (dto.ProductImage is { Length: > 255 }) throw new InvalidOperationException("productImage must be 255 characters or fewer.");
+        if (dto.Variations is not { Count: > 0 }) throw new InvalidOperationException("variations must list at least one variation.");
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < dto.Variations.Count; i++)
+        {
+            var line = dto.Variations[i];
+            if (string.IsNullOrWhiteSpace(line.Sku)) throw new InvalidOperationException($"variations[{i}].sku is required.");
+            if (line.Sku.Trim().Length > 100) throw new InvalidOperationException($"variations[{i}].sku must be 100 characters or fewer.");
+            if (!seen.Add(line.Sku.Trim())) throw new InvalidOperationException($"variations[{i}].sku '{line.Sku}' is listed twice.");
+            if (string.IsNullOrWhiteSpace(line.PackagingType)) throw new InvalidOperationException($"variations[{i}].packagingType is required.");
+            if (string.IsNullOrWhiteSpace(line.Size)) throw new InvalidOperationException($"variations[{i}].size is required.");
+            var name = string.IsNullOrWhiteSpace(line.VariationName)
+                ? $"{line.Sku.Trim()}|{line.PackagingType.Trim()}|{line.Size.Trim()}"
+                : line.VariationName.Trim();
+            if (name.Length > 100) throw new InvalidOperationException($"variations[{i}].variationName must be 100 characters or fewer.");
+        }
+    }
+
+    // ────────────────────────────────────────────────────
     // Private helpers
     // ────────────────────────────────────────────────────
 

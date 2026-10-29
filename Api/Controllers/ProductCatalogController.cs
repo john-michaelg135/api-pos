@@ -121,6 +121,29 @@ public class ProductCatalogController : ControllerBase
         return Ok(variation);
     }
 
+    // ── SCMS Module 1: product & variation sync ──
+
+    // POST api-pos/product-catalog/sync-product
+    // Called by SCMS with its service key (see ScmsServiceAuth); the owner may also call it.
+    [HttpPost("sync-product")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> SyncProduct([FromBody] SyncProductDto dto)
+    {
+        if (PosRoleAuthorization.RequireAdministrator(HttpContext) is { } denied) return denied;
+        if (dto == null) return BadRequest(new { success = false, message = "Product data is required." });
+
+        try
+        {
+            var result = await _productCatalogService.SyncProductFromScmsAsync(dto);
+            return Ok(new { success = true, message = "Product catalog synced successfully.", data = result });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { success = false, message = ex.Message });
+        }
+    }
+
     // ── POS-004: Price history ──
 
     // GET api-pos/product-catalog/variations/{variationId}/price-history

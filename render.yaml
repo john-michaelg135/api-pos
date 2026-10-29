@@ -67,6 +67,11 @@ services:
       # Left blank on purpose; the app falls back to a default and works without it.
       - key: SCMS_API_BASE_URL
         value: ""
+      # Shared secret SCMS sends as "Authorization: Bearer <key>" on the routes it calls
+      # (POST /api-pos/transfers, GET /api-pos/branches/..., POST .../sync-product).
+      # At least 32 characters; give the same value to the SCMS team. Unset = off.
+      - key: SCMS_SERVICE_KEY
+        sync: false
 
       # ── Audit logs (optional; disabled) ──
       - key: AUDIT_SERVICE_ENABLED

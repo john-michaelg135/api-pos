@@ -25,6 +25,12 @@ public class DestinationBranchDto
 public class TransferProductDto
 {
     public string ProductId { get; set; } = string.Empty;
+    /// <summary>Canonical SKU shared with SCMS; how the line is matched to a POS variation on receipt.</summary>
+    public string? Sku { get; set; }
     public string ProductName { get; set; } = string.Empty;
     public int Quantity { get; set; }
+    /// <summary>Production lot (optional; accepted per the spec, not stored yet).</summary>
+    public string? BatchNumber { get; set; }
+    /// <summary>Shelf-life expiry (optional; accepted per the spec, not stored yet).</summary>
+    public DateTime? ExpirationDate { get; set; }
 }

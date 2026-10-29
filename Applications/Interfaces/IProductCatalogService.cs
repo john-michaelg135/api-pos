@@ -19,4 +19,7 @@ public interface IProductCatalogService
 
     // POS-004: Price history
     Task<List<PriceHistoryResponseDto>> GetPriceHistoryAsync(int variationId);
+
+    // SCMS Module 1: create or update a product and its variations from SCMS
+    Task<SyncProductResultDto> SyncProductFromScmsAsync(SyncProductDto dto);
 }

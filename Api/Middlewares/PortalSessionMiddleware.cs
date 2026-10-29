@@ -63,6 +63,17 @@ public sealed class PortalSessionMiddleware
             return;
         }
 
+        // SCMS (a server, not a staff member) signs in with its service key on its own routes.
+        switch (ScmsServiceAuth.TryAuthenticate(context, _configuration, _logger))
+        {
+            case ScmsServiceAuth.Outcome.Authenticated:
+                await _next(context);
+                return;
+            case ScmsServiceAuth.Outcome.Rejected:
+                await WriteErrorAsync(context, StatusCodes.Status401Unauthorized, "Invalid SCMS service key.");
+                return;
+        }
+
         if (!context.Request.Cookies.TryGetValue(SessionCookie, out var handle) ||
             string.IsNullOrWhiteSpace(handle))
         {

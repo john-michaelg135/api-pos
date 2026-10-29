@@ -46,6 +46,8 @@ public class OrderEntryService : IOrderEntryService
         var gridItems = await _db.ProductVariations
             .AsNoTracking()
             .Where(v => v.IsActive && v.Product.IsActive)
+            // Unpriced variations (e.g. just synced from SCMS) can't be sold until a manager prices them.
+            .Where(v => v.ProductPrices.Any(pp => pp.IsActive && pp.Price > 0))
             .Include(v => v.Product)
             .Include(v => v.ProductPrices.Where(pp => pp.IsActive))
             .Select(v => new ProductGridItemDto
