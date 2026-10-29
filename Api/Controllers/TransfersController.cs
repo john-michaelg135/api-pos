@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Api.Contracts.Scms;
+using Api.Middlewares;
+using Applications.Services;
 using Domains.Entities;
 using Infrastructures.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -77,48 +79,34 @@ public class TransfersController : ControllerBase
         });
     }
 
-    // POST api-pos/transfers/{transferId}/receive
+    // GET api-pos/transfers/pending — deliveries waiting at the caller's branches (Receive Stock).
+    [HttpGet("pending")]
+    [ProducesResponseType(typeof(List<PendingTransferDto>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetPending([FromServices] TransferReceivingService receiving)
+    {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
+        return Ok(await receiving.GetPendingAsync());
+    }
+
+    // POST api-pos/transfers/{transferId}/receive — the branch's count for each line.
     [HttpPost("{transferId}/receive")]
     [ProducesResponseType(StatusCodes.Status200OK)]
-    public async Task<IActionResult> ReceiveTransfer(string transferId, [FromServices] Applications.Interfaces.IScmsIntegrationService scmsService, [FromServices] Applications.Interfaces.IInventoryService inventoryService, [FromBody] ReceiveConfirmationDto dto)
+    public async Task<IActionResult> ReceiveTransfer(string transferId, [FromServices] TransferReceivingService receiving, [FromBody] ReceiveTransferRequest request)
     {
-        var transfer = await _db.StockTransfers
-            .Include(t => t.Items)
-            .FirstOrDefaultAsync(t => t.TransferId == transferId);
-
-        if (transfer == null) return NotFound("Transfer not found.");
-        if (transfer.Status == "Completed") return BadRequest("Transfer is already completed.");
-
-        // Convert the string BranchId back to int LocationId for inventory receiving
-        if (!int.TryParse(transfer.DestinationBranchId, out var locationId))
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
+        try
         {
-            return BadRequest("Invalid BranchId for POS inventory.");
+            var message = await receiving.ReceiveAsync(transferId, request);
+            return Ok(new { success = true, message });
         }
-
-        foreach (var prod in dto.ReceivedProducts)
+        catch (KeyNotFoundException ex)
         {
-            // Find variation id mapping. For now, assuming ProductId = VariationId or we just use it directly.
-            // In a real system, you'd map ProductId to VariationId.
-            if (!int.TryParse(prod.ProductId, out var varId)) continue;
-
-            await inventoryService.ReceiveStockAsync(new Api.Contracts.Inventory.StockReceivingDto
-            {
-                VariationId = varId,
-                LocationId = locationId,
-                QuantityReceived = prod.ReceivedQuantity,
-                Notes = dto.Notes,
-                ReceivedBy = null // You can map from context
-            });
+            return NotFound(new { success = false, message = ex.Message });
         }
-
-        transfer.Status = "Completed";
-        _db.StockTransfers.Update(transfer);
-        await _db.SaveChangesAsync();
-
-        // Notify SCMS
-        await scmsService.ConfirmTransferAsync(transferId, dto);
-
-        return Ok(new { success = true, message = "Transfer received successfully." });
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { success = false, message = ex.Message });
+        }
     }
 
     /// <summary>

@@ -46,7 +46,8 @@ public class ScmsApiClient
     {
         try
         {
-            var response = await _http.PutAsJsonAsync($"/api/StockTransfers/{transferId}/status", new { status });
+            using var content = await BufferedJsonAsync(new { status });
+            var response = await _http.PutAsync($"/api/StockTransfers/{transferId}/status", content);
             response.EnsureSuccessStatusCode();
         }
         catch (HttpRequestException ex)
@@ -67,9 +68,7 @@ public class ScmsApiClient
     {
         try
         {
-            // Buffered so the request carries a Content-Length (PostAsJsonAsync streams it chunked).
-            using var content = JsonContent.Create(body);
-            await content.LoadIntoBufferAsync();
+            using var content = await BufferedJsonAsync(body);
             using var response = await _http.PostAsync("/api/pos/locations/sync", content, cancellationToken);
             if (response.IsSuccessStatusCode) return null;
 
@@ -90,7 +89,8 @@ public class ScmsApiClient
     {
         try
         {
-            var response = await _http.PostAsJsonAsync($"/api/scms/transfers/{transferId}/receive-confirmation", dto);
+            using var content = await BufferedJsonAsync(dto);
+            var response = await _http.PostAsync($"/api/scms/transfers/{transferId}/receive-confirmation", content);
             response.EnsureSuccessStatusCode();
             return true;
         }
@@ -98,5 +98,14 @@ public class ScmsApiClient
         {
             throw new InvalidOperationException($"Failed to send confirmation to SCMS API: {ex.Message}", ex);
         }
+    }
+
+    // Buffered so the request carries a Content-Length; the *AsJsonAsync helpers stream it
+    // chunked, which some servers read as an empty body.
+    private static async Task<JsonContent> BufferedJsonAsync<T>(T body)
+    {
+        var content = JsonContent.Create(body);
+        await content.LoadIntoBufferAsync();
+        return content;
     }
 }

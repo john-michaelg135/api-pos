@@ -72,6 +72,7 @@ builder.Services.AddScoped<IReconciliationService, ReconciliationService>(); // 
 builder.Services.AddHostedService<ReconciliationSweepBackgroundService>(); // auto-retry failed SCM status callbacks
 builder.Services.AddScoped<IShiftAutoCloseService, ShiftAutoCloseService>();
 builder.Services.AddScoped<ScmsLocationSyncService>(); // pushes POS branches to SCMS
+builder.Services.AddScoped<TransferReceivingService>(); // Receive Stock for SCMS deliveries
 builder.Services.AddHostedService<ShiftAutoCloseBackgroundService>(); // auto-close shifts nobody ended by end of day
 builder.Services.AddScoped<ICrmsQueryService, CrmsQueryService>();
 
