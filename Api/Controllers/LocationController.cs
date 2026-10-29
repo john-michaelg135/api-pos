@@ -11,15 +11,29 @@ namespace Api.Controllers;
 [Route("api-pos/locations")]
 public class LocationController : ControllerBase
 {
+    // Tells the browser whether the automatic branch push to SCMS worked ("ok" or "failed").
+    private const string ScmsSyncHeader = "X-Scms-Sync";
+
     private readonly ILocationService _locationService;
     private readonly IPortalUserDirectory _portalUserDirectory;
+    private readonly ScmsLocationSyncService _scmsLocationSync;
 
     public LocationController(
         ILocationService locationService,
-        IPortalUserDirectory portalUserDirectory)
+        IPortalUserDirectory portalUserDirectory,
+        ScmsLocationSyncService scmsLocationSync)
     {
         _locationService = locationService;
         _portalUserDirectory = portalUserDirectory;
+        _scmsLocationSync = scmsLocationSync;
+    }
+
+    // After a branch is added or changed, send SCMS the updated list. The save has already
+    // happened, so a failure here only sets the header; the "Sync branches" button retries.
+    private async Task PushBranchesToScmsAsync()
+    {
+        var result = await _scmsLocationSync.PushAllAsync(HttpContext.RequestAborted);
+        Response.Headers[ScmsSyncHeader] = result.Success ? "ok" : "failed";
     }
 
     // GET api-pos/locations
@@ -49,6 +63,7 @@ public class LocationController : ControllerBase
         if (string.IsNullOrWhiteSpace(dto.LocationName)) return BadRequest("Location name is required.");
 
         var location = await _locationService.CreateLocationAsync(dto);
+        await PushBranchesToScmsAsync();
         return CreatedAtAction(nameof(GetAllLocations), null, location);
     }
 
@@ -63,7 +78,21 @@ public class LocationController : ControllerBase
 
         var location = await _locationService.UpdateLocationAsync(locationId, dto);
         if (location == null) return NotFound("Location not found.");
+        await PushBranchesToScmsAsync();
         return Ok(location);
+    }
+
+    // POST api-pos/locations/sync-to-scms
+    // Sends every location to SCMS now (first sync, or a retry after a failed automatic push).
+    [HttpPost("sync-to-scms")]
+    [ProducesResponseType(typeof(Api.Contracts.Scms.ScmsLocationSyncResult), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(Api.Contracts.Scms.ScmsLocationSyncResult), StatusCodes.Status502BadGateway)]
+    public async Task<IActionResult> SyncToScms()
+    {
+        if (PosRoleAuthorization.RequireAdministrator(HttpContext) is { } denied) return denied;
+
+        var result = await _scmsLocationSync.PushAllAsync(HttpContext.RequestAborted);
+        return result.Success ? Ok(result) : StatusCode(StatusCodes.Status502BadGateway, result);
     }
 
     // ── User → location assignments ──

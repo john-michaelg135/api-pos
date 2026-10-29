@@ -71,6 +71,7 @@ builder.Services.AddScoped<IScmsIntegrationService, ScmsIntegrationService>();
 builder.Services.AddScoped<IReconciliationService, ReconciliationService>(); // POS↔SCM reconciliation
 builder.Services.AddHostedService<ReconciliationSweepBackgroundService>(); // auto-retry failed SCM status callbacks
 builder.Services.AddScoped<IShiftAutoCloseService, ShiftAutoCloseService>();
+builder.Services.AddScoped<ScmsLocationSyncService>(); // pushes POS branches to SCMS
 builder.Services.AddHostedService<ShiftAutoCloseBackgroundService>(); // auto-close shifts nobody ended by end of day
 builder.Services.AddScoped<ICrmsQueryService, CrmsQueryService>();
 
@@ -103,11 +104,14 @@ builder.Services.AddHttpClient("AuthService", client =>
 var scmsApiUrl = Environment.GetEnvironmentVariable("SCMS_API_BASE_URL");
 if (string.IsNullOrWhiteSpace(scmsApiUrl))
     scmsApiUrl = "http://api-scm:5000";
+builder.Services.AddTransient<ScmsRequestHeadersHandler>();
 builder.Services.AddHttpClient<ScmsApiClient>(client =>
 {
     client.BaseAddress = new Uri(scmsApiUrl);
     client.Timeout     = TimeSpan.FromSeconds(30);
-});
+})
+// Service key (SCMS_API_KEY), X-Correlation-ID and X-Source-System on every call to SCMS.
+.AddHttpMessageHandler<ScmsRequestHeadersHandler>();
 
 // Xendit client (US-POS-Xendit)
 builder.Services.AddHttpClient("XenditClient", client =>

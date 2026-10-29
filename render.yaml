@@ -66,7 +66,11 @@ services:
       # ── SCMS integration (owned by another team; optional for POS demo) ──
       # Left blank on purpose; the app falls back to a default and works without it.
       - key: SCMS_API_BASE_URL
-        value: ""
+        value: "https://br-sims.vercel.app"
+      # Key SCMS gave POS; sent as "Authorization: Bearer <key>" on every call to SCMS
+      # (receive confirmations, status updates). Set it in the dashboard.
+      - key: SCMS_API_KEY
+        sync: false
       # Shared secret SCMS sends as "Authorization: Bearer <key>" on the routes it calls
       # (POST /api-pos/transfers, GET /api-pos/branches/..., POST .../sync-product).
       # At least 32 characters; give the same value to the SCMS team. Unset = off.

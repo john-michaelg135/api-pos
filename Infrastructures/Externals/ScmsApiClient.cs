@@ -60,6 +60,30 @@ public class ScmsApiClient
     }
 
     /// <summary>
+    /// Sends POS's whole branch list to SCMS (POST /api/pos/locations/sync). Returns null on
+    /// success, or a short reason it failed; never throws, so a branch save can't fail on it.
+    /// </summary>
+    public async Task<string?> SyncLocationsAsync(ScmsLocationSyncRequest body, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Buffered so the request carries a Content-Length (PostAsJsonAsync streams it chunked).
+            using var content = JsonContent.Create(body);
+            await content.LoadIntoBufferAsync();
+            using var response = await _http.PostAsync("/api/pos/locations/sync", content, cancellationToken);
+            if (response.IsSuccessStatusCode) return null;
+
+            var detail = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (detail.Length > 200) detail = detail[..200];
+            return $"SCMS answered HTTP {(int)response.StatusCode}{(string.IsNullOrWhiteSpace(detail) ? "" : $": {detail}")}";
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            return $"SCMS could not be reached ({ex.GetType().Name}).";
+        }
+    }
+
+    /// <summary>
     /// Sends a receive confirmation to the SCMS API when a branch receives a transfer.
     /// </summary>
     public async Task<bool> SendReceiveConfirmationAsync(string transferId, ReceiveConfirmationDto dto)
