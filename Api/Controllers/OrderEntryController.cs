@@ -19,15 +19,15 @@ public class OrderEntryController : ControllerBase
 
     // ── POS-005 / EC-004: Product grid with optional stock availability ──
 
-    // GET api-pos/order-entry/product-grid?locationId=X
+    // GET api-pos/order-entry/product-grid?locationId=X&includeUnpriced=true
     [HttpGet("product-grid")]
     [ProducesResponseType(typeof(List<ProductGridItemDto>), StatusCodes.Status200OK)]
-    public async Task<IActionResult> GetProductGrid([FromQuery] int? locationId = null)
+    public async Task<IActionResult> GetProductGrid([FromQuery] int? locationId = null, [FromQuery] bool includeUnpriced = false)
     {
         var user = HttpContext.GetCurrentUser();
         locationId ??= user?.LocationId;
         if (PosRoleAuthorization.RequireLocationAccess(HttpContext, locationId) is { } denied) return denied;
-        var gridItems = await _orderEntryService.GetProductGridAsync(locationId);
+        var gridItems = await _orderEntryService.GetProductGridAsync(locationId, includeUnpriced);
         return Ok(gridItems);
     }
 

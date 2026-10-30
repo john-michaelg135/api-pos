@@ -35,7 +35,7 @@ public class OrderEntryService : IOrderEntryService
     // POS-005: Product grid for POS order screen
     // ────────────────────────────────────────────────────
 
-    public async Task<List<ProductGridItemDto>> GetProductGridAsync(int? locationId = null)
+    public async Task<List<ProductGridItemDto>> GetProductGridAsync(int? locationId = null, bool includeUnpriced = false)
     {
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         if (currentUser?.SubRole == "Cashier")
@@ -43,11 +43,21 @@ public class OrderEntryService : IOrderEntryService
             locationId = currentUser.LocationId;
         }
 
-        var gridItems = await _db.ProductVariations
+        var query = _db.ProductVariations
             .AsNoTracking()
-            .Where(v => v.IsActive && v.Product.IsActive)
-            // Unpriced variations (e.g. just synced from SCMS) can't be sold until a manager prices them.
-            .Where(v => v.ProductPrices.Any(pp => pp.IsActive && pp.Price > 0))
+            .Where(v => v.IsActive && v.Product.IsActive);
+
+        // For a branch, only what that branch carries: variations with a stock record there
+        // (received or adjusted at some point), not the whole catalog.
+        if (locationId.HasValue)
+            query = query.Where(v => _db.Stocks.Any(s => s.VariationId == v.VariationId && s.LocationId == locationId.Value));
+
+        // Unpriced variations (e.g. just synced from SCMS) can't be sold until a manager prices
+        // them; the sales screen asks for them anyway so it can show them as "No price set".
+        if (!includeUnpriced)
+            query = query.Where(v => v.ProductPrices.Any(pp => pp.IsActive && pp.Price > 0));
+
+        var gridItems = await query
             .Include(v => v.Product)
             .Include(v => v.ProductPrices.Where(pp => pp.IsActive))
             .Select(v => new ProductGridItemDto
@@ -59,9 +69,10 @@ public class OrderEntryService : IOrderEntryService
                 VariationId     = v.VariationId,
                 VariationName   = v.VariationName,
                 Price           = v.ProductPrices
-                    .Where(pp => pp.IsActive)
+                    .Where(pp => pp.IsActive && pp.Price > 0)
                     .Select(pp => pp.Price)
-                    .FirstOrDefault()
+                    .FirstOrDefault(),
+                HasPrice        = v.ProductPrices.Any(pp => pp.IsActive && pp.Price > 0)
             })
             .OrderBy(g => g.ProductName)
             .ThenBy(g => g.VariationName)
@@ -172,7 +183,7 @@ public class OrderEntryService : IOrderEntryService
             // Get the active price for this variation (snapshot it!)
             var activePrice = await _db.ProductPrices
                 .AsNoTracking()
-                .Where(pp => pp.VariationId == cartItem.VariationId && pp.IsActive)
+                .Where(pp => pp.VariationId == cartItem.VariationId && pp.IsActive && pp.Price > 0)
                 .FirstOrDefaultAsync();
 
             if (activePrice == null)
@@ -471,10 +482,13 @@ public class OrderEntryService : IOrderEntryService
         foreach (var cartItem in dto.Items)
         {
             var activePrice = await _db.ProductPrices
-                .Where(pp => pp.VariationId == cartItem.VariationId && pp.IsActive)
+                .Where(pp => pp.VariationId == cartItem.VariationId && pp.IsActive && pp.Price > 0)
                 .FirstOrDefaultAsync();
 
-            var unitPrice = activePrice?.Price ?? 0;
+            if (activePrice == null)
+                throw new InvalidOperationException($"No active price found for variation ID {cartItem.VariationId}");
+
+            var unitPrice = activePrice.Price;
             var subtotal = unitPrice * cartItem.Quantity;
             totalAmount += subtotal;
             pricedItems.Add((cartItem, unitPrice, subtotal));
@@ -615,7 +629,7 @@ public class OrderEntryService : IOrderEntryService
         foreach (var cartItem in dto.Items)
         {
             var activePrice = await _db.ProductPrices.AsNoTracking()
-                .Where(pp => pp.VariationId == cartItem.VariationId && pp.IsActive)
+                .Where(pp => pp.VariationId == cartItem.VariationId && pp.IsActive && pp.Price > 0)
                 .FirstOrDefaultAsync();
 
             if (activePrice == null)

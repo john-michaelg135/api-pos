@@ -5,7 +5,7 @@ namespace Applications.Interfaces;
 public interface IOrderEntryService
 {
     // POS-005 / EC-004: Product grid (optional locationId adds stock info)
-    Task<List<ProductGridItemDto>> GetProductGridAsync(int? locationId = null);
+    Task<List<ProductGridItemDto>> GetProductGridAsync(int? locationId = null, bool includeUnpriced = false);
 
     // POS-006: Order creation and retrieval
     Task<OrderResponseDto> CreateOrderAsync(CreateOrderDto dto);
