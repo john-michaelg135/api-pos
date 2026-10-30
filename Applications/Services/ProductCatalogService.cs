@@ -254,8 +254,9 @@ public class ProductCatalogService : IProductCatalogService
 
     // ────────────────────────────────────────────────────
     // SCMS Module 1: product & variation sync
-    // SCMS owns names, categories and SKUs; POS owns the selling price. New variations get
-    // no price, so they stay off the sales screen until a manager prices them.
+    // SCMS owns names, categories and SKUs; POS owns the selling price. A price SCMS sends is
+    // only a starting price for a variation POS hasn't priced yet; without one, the variation
+    // stays off the sales screen until a manager prices it.
     // ────────────────────────────────────────────────────
 
     public async Task<SyncProductResultDto> SyncProductFromScmsAsync(SyncProductDto dto)
@@ -286,6 +287,7 @@ public class ProductCatalogService : IProductCatalogService
         product.SyncedAt = now;
 
         var syncedVariations = new List<ProductVariation>();
+        var suggestedPrices = new List<(ProductVariation Variation, decimal Price)>();
         foreach (var line in dto.Variations)
         {
             var sku = line.Sku.Trim();
@@ -314,9 +316,33 @@ public class ProductCatalogService : IProductCatalogService
             variation.IsActive = line.IsActive;
             variation.SyncedAt = now;
             syncedVariations.Add(variation);
+            if (line.Price is { } suggested) suggestedPrices.Add((variation, decimal.Round(suggested, 2)));
         }
 
         await _db.SaveChangesAsync();
+
+        // Starting prices: only for variations with no real (> 0) POS price yet, so a
+        // manager's price is never overwritten by a later sync.
+        var startingPricesSet = 0;
+        foreach (var (variation, suggested) in suggestedPrices)
+        {
+            var activePrices = await _db.ProductPrices
+                .Where(pp => pp.VariationId == variation.VariationId && pp.IsActive)
+                .ToListAsync();
+            if (activePrices.Any(pp => pp.Price > 0)) continue;
+
+            activePrices.ForEach(pp => pp.IsActive = false); // a leftover ₱0 placeholder
+            _db.ProductPrices.Add(new ProductPrice
+            {
+                VariationId = variation.VariationId,
+                Price = suggested,
+                IsActive = true,
+                EffectiveFrom = now,
+                CreatedAt = now,
+            });
+            startingPricesSet++;
+        }
+        if (startingPricesSet > 0) await _db.SaveChangesAsync();
 
         var syncedIds = syncedVariations.Select(v => v.VariationId).ToList();
         var priced = await _db.ProductPrices
@@ -330,6 +356,7 @@ public class ProductCatalogService : IProductCatalogService
             ProductId = product.ProductId,
             ScmsProductId = scmsId,
             SyncedVariationsCount = syncedVariations.Count,
+            StartingPricesSetCount = startingPricesSet,
             PendingPricingCount = syncedVariations.Count - priced,
         };
     }
@@ -358,6 +385,8 @@ public class ProductCatalogService : IProductCatalogService
                 ? $"{line.Sku.Trim()}|{line.PackagingType.Trim()}|{line.Size.Trim()}"
                 : line.VariationName.Trim();
             if (name.Length > 100) throw new InvalidOperationException($"variations[{i}].variationName must be 100 characters or fewer.");
+            if (line.Price is { } price && (price <= 0 || price > 1_000_000))
+                throw new InvalidOperationException($"variations[{i}].price must be more than 0 and at most 1,000,000 (or left out).");
         }
     }
 
