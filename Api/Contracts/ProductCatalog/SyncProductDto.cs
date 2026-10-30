@@ -28,6 +28,10 @@ public class SyncVariationDto
     /// once a POS manager prices it, later syncs never change it.
     /// </summary>
     public decimal? Price { get; set; }
+    /// <summary>Same as <see cref="Price"/>, under the name SCMS uses for it.</summary>
+    public decimal? SellingPrice { get; set; }
+
+    public decimal? SuggestedPrice => Price ?? SellingPrice;
 }
 
 public class SyncProductResultDto
@@ -35,6 +39,8 @@ public class SyncProductResultDto
     public int ProductId { get; set; }
     public string ScmsProductId { get; set; } = string.Empty;
     public int SyncedVariationsCount { get; set; }
+    /// <summary>Variations that arrived with a price (price or sellingPrice) on this sync.</summary>
+    public int PricesReceivedCount { get; set; }
     /// <summary>Variations that took SCMS's price as their starting price on this sync.</summary>
     public int StartingPricesSetCount { get; set; }
     /// <summary>Variations with no selling price yet; they stay off the sales screen until a manager prices them.</summary>

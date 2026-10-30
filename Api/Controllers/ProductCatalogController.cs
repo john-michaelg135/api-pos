@@ -128,7 +128,7 @@ public class ProductCatalogController : ControllerBase
     [HttpPost("sync-product")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> SyncProduct([FromBody] SyncProductDto dto)
+    public async Task<IActionResult> SyncProduct([FromBody] SyncProductDto dto, [FromServices] ILogger<ProductCatalogController> logger)
     {
         if (PosRoleAuthorization.RequireAdministrator(HttpContext) is { } denied) return denied;
         if (dto == null) return BadRequest(new { success = false, message = "Product data is required." });
@@ -136,6 +136,10 @@ public class ProductCatalogController : ControllerBase
         try
         {
             var result = await _productCatalogService.SyncProductFromScmsAsync(dto);
+            // Shows up in the Render logs: whether SCMS sent prices and whether POS used them.
+            logger.LogInformation(
+                "SCMS product sync {ScmsProductId}: {Variations} variations, {PricesReceived} with a price, {StartingPrices} starting prices set, {Pending} still need a price",
+                result.ScmsProductId, result.SyncedVariationsCount, result.PricesReceivedCount, result.StartingPricesSetCount, result.PendingPricingCount);
             return Ok(new { success = true, message = "Product catalog synced successfully.", data = result });
         }
         catch (InvalidOperationException ex)

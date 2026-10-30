@@ -316,7 +316,7 @@ public class ProductCatalogService : IProductCatalogService
             variation.IsActive = line.IsActive;
             variation.SyncedAt = now;
             syncedVariations.Add(variation);
-            if (line.Price is { } suggested) suggestedPrices.Add((variation, decimal.Round(suggested, 2)));
+            if (line.SuggestedPrice is { } suggested) suggestedPrices.Add((variation, decimal.Round(suggested, 2)));
         }
 
         await _db.SaveChangesAsync();
@@ -356,6 +356,7 @@ public class ProductCatalogService : IProductCatalogService
             ProductId = product.ProductId,
             ScmsProductId = scmsId,
             SyncedVariationsCount = syncedVariations.Count,
+            PricesReceivedCount = suggestedPrices.Count,
             StartingPricesSetCount = startingPricesSet,
             PendingPricingCount = syncedVariations.Count - priced,
         };
@@ -385,7 +386,7 @@ public class ProductCatalogService : IProductCatalogService
                 ? $"{line.Sku.Trim()}|{line.PackagingType.Trim()}|{line.Size.Trim()}"
                 : line.VariationName.Trim();
             if (name.Length > 100) throw new InvalidOperationException($"variations[{i}].variationName must be 100 characters or fewer.");
-            if (line.Price is { } price && (price <= 0 || price > 1_000_000))
+            if (line.SuggestedPrice is { } price && (price <= 0 || price > 1_000_000))
                 throw new InvalidOperationException($"variations[{i}].price must be more than 0 and at most 1,000,000 (or left out).");
         }
     }
