@@ -236,6 +236,55 @@ namespace api_pos.Migrations
                     b.ToTable("Orders");
                 });
 
+            modelBuilder.Entity("Domains.Entities.OrderDeliveryConfirmation", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int?>("ConfirmedBy")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ConfirmedByName")
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)");
+
+                    b.Property<string>("CourierReference")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<DateTime>("DeliveredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Notes")
+                        .HasColumnType("text");
+
+                    b.Property<int>("OrderId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ProofImage")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ReceivedBy")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrderId")
+                        .IsUnique();
+
+                    b.ToTable("OrderDeliveryConfirmations");
+                });
+
             modelBuilder.Entity("Domains.Entities.OrderItem", b =>
                 {
                     b.Property<int>("ItemId")
@@ -649,6 +698,9 @@ namespace api_pos.Migrations
                     b.Property<decimal>("Amount")
                         .HasColumnType("numeric(12,2)");
 
+                    b.Property<decimal?>("ApprovedRefundAmount")
+                        .HasColumnType("numeric(12,2)");
+
                     b.Property<string>("AuthUserId")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -682,17 +734,14 @@ namespace api_pos.Migrations
                         .HasMaxLength(150)
                         .HasColumnType("character varying(150)");
 
-                    b.Property<decimal?>("SuccessfulSalesAmount")
-                        .HasColumnType("numeric(12,2)");
-
-                    b.Property<decimal?>("ApprovedRefundAmount")
-                        .HasColumnType("numeric(12,2)");
-
                     b.Property<decimal?>("ExpectedCash")
                         .HasColumnType("numeric(12,2)");
 
                     b.Property<int>("LocationId")
                         .HasColumnType("integer");
+
+                    b.Property<decimal?>("SuccessfulSalesAmount")
+                        .HasColumnType("numeric(12,2)");
 
                     b.HasKey("Id");
 
@@ -970,6 +1019,17 @@ namespace api_pos.Migrations
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Location");
+                });
+
+            modelBuilder.Entity("Domains.Entities.OrderDeliveryConfirmation", b =>
+                {
+                    b.HasOne("Domains.Entities.Order", "Order")
+                        .WithMany()
+                        .HasForeignKey("OrderId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Order");
                 });
 
             modelBuilder.Entity("Domains.Entities.OrderItem", b =>

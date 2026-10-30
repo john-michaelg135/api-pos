@@ -48,4 +48,5 @@ public class OrderManagementResponseDto
     public List<PaymentResponseDto> Payments { get; set; } = new();
     public List<OrderItemResponseDto> Items { get; set; } = new();
     public List<OrderStatusHistoryResponseDto> StatusHistory { get; set; } = new();
+    public DeliveryConfirmationResponseDto? DeliveryConfirmation { get; set; }
 }

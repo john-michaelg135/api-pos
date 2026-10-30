@@ -341,6 +341,25 @@ public class PosDbContext : DbContext
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
+        modelBuilder.Entity<OrderDeliveryConfirmation>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).UseIdentityByDefaultColumn();
+            entity.Property(e => e.ReceivedBy).IsRequired().HasMaxLength(150);
+            entity.Property(e => e.DeliveredAt).IsRequired();
+            entity.Property(e => e.CourierReference).HasMaxLength(500);
+            entity.Property(e => e.ProofImage).HasColumnType("text");
+            entity.Property(e => e.Notes).HasColumnType("text");
+            entity.Property(e => e.ConfirmedByName).HasMaxLength(150);
+            entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => e.OrderId).IsUnique();
+
+            entity.HasOne(e => e.Order)
+                .WithMany()
+                .HasForeignKey(e => e.OrderId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
         modelBuilder.Entity<PosUserPin>(entity =>
         {
             entity.HasKey(e => e.Id);
@@ -397,6 +416,7 @@ public class PosDbContext : DbContext
     public DbSet<StockAdjustment> StockAdjustments { get; set; }
     public DbSet<CartItem> CartItems { get; set; }
     public DbSet<OrderStatusHistory> OrderStatusHistories { get; set; }
+    public DbSet<OrderDeliveryConfirmation> OrderDeliveryConfirmations { get; set; }
     public DbSet<PosUserPin> PosUserPins { get; set; }
     public DbSet<StartingCash> StartingCashEntries { get; set; }
 }

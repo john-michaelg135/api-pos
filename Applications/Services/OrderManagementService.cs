@@ -226,7 +226,9 @@ public class OrderManagementService : IOrderManagementService
             .OrderByDescending(o => o.CreatedAt)
             .ToListAsync();
 
-        return orders.Select(MapToResponse).ToList();
+        var response = orders.Select(MapToResponse).ToList();
+        await AttachDeliveryConfirmationsAsync(response);
+        return response;
     }
 
     // ────────────────────────────────────────────────────
@@ -302,6 +304,180 @@ public class OrderManagementService : IOrderManagementService
         return MapToResponse(order);
     }
 
+    // ────────────────────────────────────────────────────
+    // Institutional delivery confirmation (Shipped → Completed with proof)
+    // ────────────────────────────────────────────────────
+
+    // Shrunk JPEGs are ~100–300 KB as data URLs; anything far past that wasn't shrunk.
+    private const int MaxProofImageLength = 3_000_000;
+
+    public async Task<OrderManagementResponseDto?> ConfirmInstitutionalDeliveryAsync(int orderId, ConfirmInstitutionalDeliveryDto dto)
+    {
+        var order = await _db.Orders
+            .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.ProductVariation)
+                    .ThenInclude(v => v.Product)
+            .Include(o => o.Payments)
+            .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
+            .FirstOrDefaultAsync(o => o.OrderId == orderId);
+        if (order == null) return null;
+        EnsureCurrentUserCanAccessOrderLocation(order);
+
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        if (currentUser != null && !PosRoleAuthorization.IsManager(currentUser))
+            throw new InvalidOperationException("Only Order Managers and Admins can confirm deliveries.");
+
+        if (order.OrderType != "Institutional")
+            throw new InvalidOperationException($"Order {order.OrderNumber} is not an institutional order.");
+
+        if (order.OrderStatus != "Shipped")
+            throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Only Shipped orders can be confirmed as delivered.");
+
+        if (order.PaymentStatus == "Partial")
+            throw new InvalidOperationException($"Order {order.OrderNumber} still has an unpaid balance. Complete the remaining GCash payment first.");
+
+        if (await _db.OrderDeliveryConfirmations.AnyAsync(c => c.OrderId == orderId))
+            throw new InvalidOperationException($"Delivery for Order {order.OrderNumber} has already been confirmed.");
+
+        var receivedBy = dto.ReceivedBy?.Trim() ?? string.Empty;
+        if (receivedBy.Length == 0)
+            throw new InvalidOperationException("Enter who received the order.");
+        if (receivedBy.Length > 150)
+            throw new InvalidOperationException("Received by must not exceed 150 characters.");
+
+        var deliveredAt = dto.DeliveredAt.Kind switch
+        {
+            DateTimeKind.Utc => dto.DeliveredAt,
+            DateTimeKind.Local => dto.DeliveredAt.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(dto.DeliveredAt, DateTimeKind.Utc),
+        };
+        var now = DateTime.UtcNow;
+        // A little slack for clock drift between the browser and the server.
+        if (deliveredAt > now.AddMinutes(5))
+            throw new InvalidOperationException("Delivered on can't be in the future.");
+        if (deliveredAt < order.CreatedAt.AddMinutes(-1))
+            throw new InvalidOperationException("Delivered on can't be before the order date.");
+
+        var courierReference = string.IsNullOrWhiteSpace(dto.CourierReference) ? null : dto.CourierReference.Trim();
+        if (courierReference?.Length > 500)
+            throw new InvalidOperationException("Courier reference must not exceed 500 characters.");
+
+        var notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim();
+        if (notes?.Length > 1000)
+            throw new InvalidOperationException("Notes must not exceed 1000 characters.");
+
+        var proofImage = string.IsNullOrWhiteSpace(dto.ProofImage) ? null : dto.ProofImage.Trim();
+        if (proofImage != null)
+        {
+            if (!proofImage.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase) || !proofImage.Contains(";base64,"))
+                throw new InvalidOperationException("Proof photo must be an image.");
+            if (proofImage.Length > MaxProofImageLength)
+                throw new InvalidOperationException("Proof photo is too large.");
+        }
+
+        var confirmedByName = currentUser?.DisplayName ?? currentUser?.Username;
+        var confirmation = new OrderDeliveryConfirmation
+        {
+            OrderId          = order.OrderId,
+            ReceivedBy       = receivedBy,
+            DeliveredAt      = deliveredAt,
+            CourierReference = courierReference,
+            ProofImage       = proofImage,
+            Notes            = notes,
+            ConfirmedBy      = dto.ConfirmedBy,
+            ConfirmedByName  = string.IsNullOrWhiteSpace(confirmedByName) ? null : confirmedByName,
+            CreatedAt        = now
+        };
+        await _db.OrderDeliveryConfirmations.AddAsync(confirmation);
+
+        var currentStatus = order.OrderStatus;
+        order.OrderStatus   = "Completed";
+        order.PaymentStatus = "Paid";
+        order.UpdatedAt     = now;
+
+        // Same as a manual move to Completed: make sure the sale has a payment on record.
+        if (!order.Payments.Any(p => p.PaymentStatus == "Success"))
+        {
+            await _db.Payments.AddAsync(new Payment
+            {
+                OrderId        = order.OrderId,
+                AmountPaid     = order.TotalAmount,
+                PaymentChannel = order.PaymentMethod ?? "COD",
+                PaymentStatus  = "Success",
+                PaidAt         = now
+            });
+        }
+
+        var byWhom = confirmation.ConfirmedByName != null ? $" by {confirmation.ConfirmedByName}" : "";
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Completed", dto.ConfirmedBy,
+            $"Delivery confirmed{byWhom}. Received by {receivedBy}.");
+
+        _db.Orders.Update(order);
+        await _db.SaveChangesAsync();
+
+        var response = MapToResponse(order);
+        response.DeliveryConfirmation = MapDeliveryConfirmation(confirmation);
+        return response;
+    }
+
+    public async Task<string?> GetDeliveryProofImageAsync(int orderId)
+    {
+        var order = await _db.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.OrderId == orderId);
+        if (order == null) return null;
+        EnsureCurrentUserCanAccessOrderLocation(order);
+
+        return await _db.OrderDeliveryConfirmations
+            .Where(c => c.OrderId == orderId)
+            .Select(c => c.ProofImage)
+            .FirstOrDefaultAsync();
+    }
+
+    // Adds delivery confirmations (without the photo) to a page of orders in one query.
+    private async Task AttachDeliveryConfirmationsAsync(List<OrderManagementResponseDto> orders)
+    {
+        var orderIds = orders.Select(o => o.OrderId).ToList();
+        if (orderIds.Count == 0) return;
+
+        var confirmations = await _db.OrderDeliveryConfirmations
+            .AsNoTracking()
+            .Where(c => orderIds.Contains(c.OrderId))
+            .Select(c => new
+            {
+                c.OrderId,
+                Dto = new DeliveryConfirmationResponseDto
+                {
+                    ReceivedBy       = c.ReceivedBy,
+                    DeliveredAt      = c.DeliveredAt,
+                    CourierReference = c.CourierReference,
+                    Notes            = c.Notes,
+                    HasProofImage    = c.ProofImage != null,
+                    ConfirmedBy      = c.ConfirmedBy,
+                    ConfirmedByName  = c.ConfirmedByName,
+                    ConfirmedAt      = c.CreatedAt
+                }
+            })
+            .ToDictionaryAsync(c => c.OrderId, c => c.Dto);
+
+        foreach (var order in orders)
+        {
+            if (confirmations.TryGetValue(order.OrderId, out var confirmation))
+                order.DeliveryConfirmation = confirmation;
+        }
+    }
+
+    private static DeliveryConfirmationResponseDto MapDeliveryConfirmation(OrderDeliveryConfirmation c) => new()
+    {
+        ReceivedBy       = c.ReceivedBy,
+        DeliveredAt      = c.DeliveredAt,
+        CourierReference = c.CourierReference,
+        Notes            = c.Notes,
+        HasProofImage    = c.ProofImage != null,
+        ConfirmedBy      = c.ConfirmedBy,
+        ConfirmedByName  = c.ConfirmedByName,
+        ConfirmedAt      = c.CreatedAt
+    };
+
     public async Task<OrderManagementResponseDto?> UpdateOrderStatusAsync(int orderId, UpdateOrderStatusDto dto)
     {
         var order = await _db.Orders
@@ -333,6 +509,13 @@ public class OrderManagementService : IOrderManagementService
         if (!allowedStatuses.Contains(targetStatus, System.StringComparer.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException($"Invalid target status '{targetStatus}'.");
+        }
+
+        // Shipped institutional orders close through Confirm Delivery so the proof is recorded.
+        if (order.OrderType == "Institutional" && currentStatus == "Shipped" &&
+            string.Equals(targetStatus, "Completed", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"Use Confirm Delivery to complete Order {order.OrderNumber}.");
         }
 
         var requiresFullPayment = new[] { "Paid", "Shipped", "Delivered", "Completed" };
@@ -608,8 +791,10 @@ public class OrderManagementService : IOrderManagementService
 
         await _db.SaveChangesAsync();
 
-        // POS-017: Auto restore stock per item
-        if (order.LocationId.HasValue)
+        // POS-017: Auto restore stock per item. Damaged/expired goods were refunded
+        // but can't be resold, so they stay out of stock.
+        var isUnsellable = order.RejectionRemarks?.StartsWith("Damaged/Expired", StringComparison.OrdinalIgnoreCase) == true;
+        if (order.LocationId.HasValue && !isUnsellable)
         {
             foreach (var item in order.OrderItems)
             {

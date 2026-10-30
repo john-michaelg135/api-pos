@@ -14,7 +14,11 @@ public interface IOrderManagementService
 
     // POS-015: COD auto-mark paid on delivery confirm
     Task<OrderManagementResponseDto?> ConfirmDeliveryAsync(int orderId, int confirmedBy);
-    
+
+    // Institutional: Shipped → Completed with proof of delivery
+    Task<OrderManagementResponseDto?> ConfirmInstitutionalDeliveryAsync(int orderId, ConfirmInstitutionalDeliveryDto dto);
+    Task<string?> GetDeliveryProofImageAsync(int orderId);
+
     // Generic order status update (Order Manager only)
     Task<OrderManagementResponseDto?> UpdateOrderStatusAsync(int orderId, UpdateOrderStatusDto dto);
     Task<OrderManagementResponseDto?> CompletePaymentAsync(int orderId, int confirmedBy);

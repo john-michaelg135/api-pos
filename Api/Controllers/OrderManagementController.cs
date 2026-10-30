@@ -105,6 +105,48 @@ public class OrderManagementController : ControllerBase
         }
     }
 
+    // ── Institutional delivery confirmation with proof ──
+
+    // PUT api-pos/order-management/orders/{orderId}/confirm-institutional-delivery
+    [HttpPut("orders/{orderId:int}/confirm-institutional-delivery")]
+    [ProducesResponseType(typeof(OrderManagementResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> ConfirmInstitutionalDelivery(int orderId, [FromBody] ConfirmInstitutionalDeliveryDto dto)
+    {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
+        if (dto == null) return BadRequest("Delivery details are required.");
+        if (string.IsNullOrWhiteSpace(dto.ReceivedBy)) return BadRequest("Received by is required.");
+        try
+        {
+            var order = await _orderManagementService.ConfirmInstitutionalDeliveryAsync(orderId, dto);
+            if (order == null) return NotFound($"Order with ID {orderId} not found.");
+            return Ok(order);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
+
+    // GET api-pos/order-management/orders/{orderId}/delivery-proof
+    [HttpGet("orders/{orderId:int}/delivery-proof")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetDeliveryProof(int orderId)
+    {
+        try
+        {
+            var image = await _orderManagementService.GetDeliveryProofImageAsync(orderId);
+            if (image == null) return NotFound("No proof photo for this order.");
+            return Ok(new { proofImage = image });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
+
     // PUT api-pos/order-management/orders/{orderId}/status
     [HttpPut("orders/{orderId:int}/status")]
     [ProducesResponseType(typeof(OrderManagementResponseDto), StatusCodes.Status200OK)]
