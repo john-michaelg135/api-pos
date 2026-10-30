@@ -229,7 +229,8 @@ public class DashboardService : IDashboardService
             .Where(p => (p.PaymentStatus == "Success" || p.PaymentStatus == "Paid")
                 && p.PaidAt >= start && p.PaidAt < end
                 && p.Order != null
-                && !ExcludedOrderStatuses.Contains(p.Order.OrderStatus)
+                // A cancelled order's forfeited (non-refundable) downpayment is still revenue.
+                && (!ExcludedOrderStatuses.Contains(p.Order.OrderStatus) || p.Order.PaymentStatus == "Forfeited")
                 && (!locationId.HasValue || p.Order.LocationId == locationId))
             .Select(p => new
             {

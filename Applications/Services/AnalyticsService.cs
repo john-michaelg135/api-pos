@@ -324,7 +324,36 @@ public class AnalyticsService : IAnalyticsService
         if (to.HasValue) itemRefundQuery = itemRefundQuery.Where(r => r.At <= to.Value);
         var itemRefunds = await itemRefundQuery.ToListAsync();
 
+        // Cancelled institutional orders whose GCash downpayment was kept (non-refundable).
+        // No goods were sold (stock went back), so they count as revenue on the day of
+        // cancellation, under one "Forfeited downpayment" line instead of a product.
+        var forfeitQuery = scoped.Where(o => o.OrderStatus == "Cancelled"
+            && o.PaymentStatus == "Forfeited"
+            && o.ApprovedAt.HasValue);
+        if (from.HasValue) forfeitQuery = forfeitQuery.Where(o => o.ApprovedAt >= from.Value);
+        if (to.HasValue) forfeitQuery = forfeitQuery.Where(o => o.ApprovedAt <= to.Value);
+        var forfeits = await forfeitQuery
+            .Select(o => new
+            {
+                o.OrderId,
+                At = o.ApprovedAt!.Value,
+                o.Location,
+                o.OrderSource,
+                o.OrderType,
+                o.PaymentMethod,
+                Kept = o.Payments.Where(p => p.PaymentStatus == "Success").Sum(p => (decimal?)p.AmountPaid) ?? 0,
+            })
+            .ToListAsync();
+
         var facts = new List<SalesFact>();
+
+        foreach (var forfeit in forfeits.Where(f => f.Kept > 0))
+        {
+            facts.Add(new SalesFact(
+                forfeit.At, BranchLabel(forfeit.Location), ChannelLabel(forfeit.OrderSource, forfeit.OrderType),
+                PaymentLabel(forfeit.PaymentMethod), 0, string.Empty, "Forfeited downpayment", "Cancelled order",
+                forfeit.OrderId, null, 0, 0, forfeit.Kept, 0, 0));
+        }
 
         foreach (var order in sales)
         {

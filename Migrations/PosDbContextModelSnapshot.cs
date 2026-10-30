@@ -322,6 +322,34 @@ namespace api_pos.Migrations
                     b.ToTable("OrderItems");
                 });
 
+            modelBuilder.Entity("Domains.Entities.OrderRefundProof", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<int>("OrderId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ProofImage")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrderId")
+                        .IsUnique();
+
+                    b.ToTable("OrderRefundProofs");
+                });
+
             modelBuilder.Entity("Domains.Entities.OrderStatusHistory", b =>
                 {
                     b.Property<int>("Id")
@@ -1049,6 +1077,17 @@ namespace api_pos.Migrations
                     b.Navigation("Order");
 
                     b.Navigation("ProductVariation");
+                });
+
+            modelBuilder.Entity("Domains.Entities.OrderRefundProof", b =>
+                {
+                    b.HasOne("Domains.Entities.Order", "Order")
+                        .WithMany()
+                        .HasForeignKey("OrderId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Order");
                 });
 
             modelBuilder.Entity("Domains.Entities.OrderStatusHistory", b =>

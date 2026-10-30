@@ -367,14 +367,7 @@ public class OrderManagementService : IOrderManagementService
         if (notes?.Length > 1000)
             throw new InvalidOperationException("Notes must not exceed 1000 characters.");
 
-        var proofImage = string.IsNullOrWhiteSpace(dto.ProofImage) ? null : dto.ProofImage.Trim();
-        if (proofImage != null)
-        {
-            if (!proofImage.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase) || !proofImage.Contains(";base64,"))
-                throw new InvalidOperationException("Proof photo must be an image.");
-            if (proofImage.Length > MaxProofImageLength)
-                throw new InvalidOperationException("Proof photo is too large.");
-        }
+        var proofImage = NormalizeProofImage(dto.ProofImage);
 
         var confirmedByName = currentUser?.DisplayName ?? currentUser?.Username;
         var confirmation = new OrderDeliveryConfirmation
@@ -434,10 +427,43 @@ public class OrderManagementService : IOrderManagementService
     }
 
     // Adds delivery confirmations (without the photo) to a page of orders in one query.
+    // Trims an optional proof photo and checks it's a reasonably sized image data URL.
+    private static string? NormalizeProofImage(string? raw)
+    {
+        var image = string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
+        if (image == null) return null;
+        if (!image.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase) || !image.Contains(";base64,"))
+            throw new InvalidOperationException("Proof photo must be an image.");
+        if (image.Length > MaxProofImageLength)
+            throw new InvalidOperationException("Proof photo is too large.");
+        return image;
+    }
+
+    public async Task<string?> GetRefundProofImageAsync(int orderId)
+    {
+        var order = await _db.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.OrderId == orderId);
+        if (order == null) return null;
+        EnsureCurrentUserCanAccessOrderLocation(order);
+
+        return await _db.OrderRefundProofs
+            .Where(p => p.OrderId == orderId)
+            .Select(p => p.ProofImage)
+            .FirstOrDefaultAsync();
+    }
+
+    // Adds delivery confirmations and refund-proof flags (never the photos) to a page of orders.
     private async Task AttachDeliveryConfirmationsAsync(List<OrderManagementResponseDto> orders)
     {
         var orderIds = orders.Select(o => o.OrderId).ToList();
         if (orderIds.Count == 0) return;
+
+        var withRefundProof = (await _db.OrderRefundProofs
+            .AsNoTracking()
+            .Where(p => orderIds.Contains(p.OrderId))
+            .Select(p => p.OrderId)
+            .ToListAsync()).ToHashSet();
+        foreach (var order in orders)
+            order.HasRefundProof = withRefundProof.Contains(order.OrderId);
 
         var confirmations = await _db.OrderDeliveryConfirmations
             .AsNoTracking()
@@ -511,11 +537,29 @@ public class OrderManagementService : IOrderManagementService
             throw new InvalidOperationException($"Invalid target status '{targetStatus}'.");
         }
 
-        // Shipped institutional orders close through Confirm Delivery so the proof is recorded.
-        if (order.OrderType == "Institutional" && currentStatus == "Shipped" &&
-            string.Equals(targetStatus, "Completed", StringComparison.OrdinalIgnoreCase))
+        if (order.OrderType == "Institutional")
         {
-            throw new InvalidOperationException($"Use Confirm Delivery to complete Order {order.OrderNumber}.");
+            // Institutional orders close through Confirm Delivery so the proof is recorded.
+            if (string.Equals(targetStatus, "Completed", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"Ship Order {order.OrderNumber} and use Confirm Delivery to complete it.");
+
+            // Shipped goods are already with the courier, so the order can't move back.
+            var beforeShipping = new[] { "Pending", "Awaiting Stock", "Processing", "Paid" };
+            if (currentStatus == "Shipped" && beforeShipping.Contains(targetStatus, System.StringComparer.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"Order {order.OrderNumber} has already shipped and can't go back to {targetStatus}.");
+
+            // A confirmed delivery is final; refunds go through the refund request flow.
+            if (currentStatus == "Completed")
+                throw new InvalidOperationException($"Order {order.OrderNumber} has been delivered. Request a refund instead of changing its status.");
+        }
+
+        // Cancelling is only for institutional orders on a 50% GCash downpayment: the client
+        // backs out, the downpayment is kept (non-refundable) and the goods go back to stock.
+        // Paid orders use Void, Failed Delivery or Refund so the money has an audit trail.
+        var isCancel = string.Equals(targetStatus, "Cancelled", StringComparison.OrdinalIgnoreCase);
+        if (isCancel && !(order.OrderType == "Institutional" && order.PaymentStatus == "Partial"))
+        {
+            throw new InvalidOperationException($"Only institutional orders with a GCash downpayment can be cancelled. Use Void or Refund for Order {order.OrderNumber}.");
         }
 
         var requiresFullPayment = new[] { "Paid", "Shipped", "Delivered", "Completed" };
@@ -529,7 +573,17 @@ public class OrderManagementService : IOrderManagementService
         order.ApprovedBy = dto.UpdatedBy;
         order.UpdatedAt = now;
 
-        await RecordStatusHistoryAsync(order.OrderId, currentStatus, targetStatus, dto.UpdatedBy, $"Status updated via panel");
+        var historyRemark = "Status updated via panel";
+        if (isCancel)
+        {
+            var kept = order.Payments.Where(p => p.PaymentStatus == "Success").Sum(p => p.AmountPaid);
+            order.PaymentStatus = "Forfeited";
+            order.ApprovedAt = now; // Sales reports date the forfeited downpayment from this.
+            order.RejectionRemarks = $"Cancelled by client. Downpayment of ₱{kept:N2} is non-refundable.";
+            historyRemark = order.RejectionRemarks;
+        }
+
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, targetStatus, dto.UpdatedBy, historyRemark);
 
         if (string.Equals(targetStatus, "Processing", StringComparison.OrdinalIgnoreCase))
         {
@@ -702,7 +756,9 @@ public class OrderManagementService : IOrderManagementService
     // POS-016 & 017: Refunds
     // ────────────────────────────────────────────────────
 
-    public async Task<OrderManagementResponseDto?> RequestRefundAsync(int orderId, string reason)
+    private const string FailedDeliveryReason = "Item not delivered";
+
+    public async Task<OrderManagementResponseDto?> RequestRefundAsync(int orderId, string reason, string? proofImage)
     {
         var order = await _db.Orders
             .Include(o => o.OrderItems)
@@ -721,6 +777,43 @@ public class OrderManagementService : IOrderManagementService
 
         if (order.OrderStatus != "Completed" && order.PaymentStatus != "Paid")
             throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus} (Payment: {order.PaymentStatus}). Only Paid or Completed orders can be refunded.");
+
+        // 50% GCash downpayments can only be refunded once the balance is paid.
+        if (order.PaymentStatus == "Partial")
+            throw new InvalidOperationException($"Order {order.OrderNumber} still has an unpaid balance. Complete the remaining GCash payment before requesting a refund.");
+
+        var image = NormalizeProofImage(proofImage);
+        var isGcashInstitutional = order.OrderType == "Institutional" &&
+            string.Equals(order.PaymentMethod, "GCash", StringComparison.OrdinalIgnoreCase);
+
+        // A shipped institutional order that Lalamove failed to deliver is refunded with
+        // "Item not delivered" (restocked, since the courier returns the goods).
+        var isFailedDelivery = order.OrderType == "Institutional" && order.OrderStatus == "Shipped";
+        if (isFailedDelivery && !string.Equals(reason?.Trim(), FailedDeliveryReason, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"Order {order.OrderNumber} hasn't been delivered yet. Only a failed delivery can be refunded before delivery is confirmed.");
+
+        // Otherwise GCash institutional customers can only ask for a refund once the order is delivered.
+        if (isGcashInstitutional && !isFailedDelivery && order.OrderStatus != "Completed")
+            throw new InvalidOperationException($"Order {order.OrderNumber} hasn't been delivered yet. GCash institutional orders can only be refunded after delivery is confirmed.");
+        if ((isGcashInstitutional || isFailedDelivery) && image == null)
+            throw new InvalidOperationException(isFailedDelivery
+                ? "Attach proof that the item wasn't delivered (e.g. Lalamove's failed-delivery screen)."
+                : "Attach a photo as proof for refunds on GCash-paid institutional orders.");
+
+        if (image != null)
+        {
+            // A new request after a rejection replaces the earlier photo.
+            var existing = await _db.OrderRefundProofs.FirstOrDefaultAsync(p => p.OrderId == order.OrderId);
+            if (existing != null)
+            {
+                existing.ProofImage = image;
+                existing.CreatedAt = DateTime.UtcNow;
+            }
+            else
+            {
+                await _db.OrderRefundProofs.AddAsync(new OrderRefundProof { OrderId = order.OrderId, ProofImage = image, CreatedAt = DateTime.UtcNow });
+            }
+        }
 
         var currentStatus = order.OrderStatus;
         order.OrderStatus = "Refund Requested";
@@ -791,9 +884,13 @@ public class OrderManagementService : IOrderManagementService
 
         await _db.SaveChangesAsync();
 
-        // POS-017: Auto restore stock per item. Damaged/expired goods were refunded
-        // but can't be resold, so they stay out of stock.
-        var isUnsellable = order.RejectionRemarks?.StartsWith("Damaged/Expired", StringComparison.OrdinalIgnoreCase) == true;
+        // POS-017: Auto restore stock per item. Unsellable goods (in-store "Damaged/Expired
+        // (Unsellable)", institutional "Damaged (Unsellable)") were refunded but can't be
+        // resold, so they stay out of stock. Institutional "Item not delivered" is restocked
+        // because the courier returns the goods.
+        var isUnsellable = order.RejectionRemarks != null &&
+            (order.RejectionRemarks.Contains("(Unsellable)", StringComparison.OrdinalIgnoreCase) ||
+             order.RejectionRemarks.StartsWith("Damaged/Expired", StringComparison.OrdinalIgnoreCase));
         if (order.LocationId.HasValue && !isUnsellable)
         {
             foreach (var item in order.OrderItems)
@@ -847,14 +944,21 @@ public class OrderManagementService : IOrderManagementService
             throw new InvalidOperationException("Unable to identify manager to validate PIN.");
         }
 
-        // Revert to Completed if refund is rejected
+        // Revert to the status before the request (usually Completed; Shipped for a
+        // rejected failed-delivery refund, so it can still be confirmed as delivered).
         var currentStatus = order.OrderStatus;
-        order.OrderStatus = "Completed";
+        var previousStatusRecord = await _db.OrderStatusHistories
+            .Where(h => h.OrderId == orderId && h.NewStatus == "Refund Requested")
+            .OrderByDescending(h => h.CreatedAt)
+            .FirstOrDefaultAsync();
+        var revertStatus = previousStatusRecord?.OldStatus ?? "Completed";
+
+        order.OrderStatus = revertStatus;
         order.ApprovedBy = rejectedBy; // Log manager id
         order.RejectionRemarks = $"Refund Rejected: {reason}";
         order.UpdatedAt = DateTime.UtcNow;
 
-        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Completed", rejectedBy, $"Refund rejected: {reason}");
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, revertStatus, rejectedBy, $"Refund rejected: {reason}");
         _db.Orders.Update(order);
 
         var refundRequests = await _db.RefundRequests.Where(r => r.OrderId == orderId).ToListAsync();

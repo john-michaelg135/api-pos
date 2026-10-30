@@ -49,4 +49,6 @@ public class OrderManagementResponseDto
     public List<OrderItemResponseDto> Items { get; set; } = new();
     public List<OrderStatusHistoryResponseDto> StatusHistory { get; set; } = new();
     public DeliveryConfirmationResponseDto? DeliveryConfirmation { get; set; }
+    // Photo itself is at GET orders/{orderId}/refund-proof.
+    public bool HasRefundProof { get; set; }
 }

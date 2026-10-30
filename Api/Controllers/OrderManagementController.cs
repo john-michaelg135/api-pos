@@ -216,9 +216,27 @@ public class OrderManagementController : ControllerBase
         if (dto == null || string.IsNullOrWhiteSpace(dto.Reason)) return BadRequest("Refund reason is required.");
         try
         {
-            var order = await _orderManagementService.RequestRefundAsync(orderId, dto.Reason);
+            var order = await _orderManagementService.RequestRefundAsync(orderId, dto.Reason, dto.ProofImage);
             if (order == null) return NotFound($"Order with ID {orderId} not found.");
             return Ok(order);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
+
+    // GET api-pos/order-management/orders/{orderId}/refund-proof
+    [HttpGet("orders/{orderId:int}/refund-proof")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetRefundProof(int orderId)
+    {
+        try
+        {
+            var image = await _orderManagementService.GetRefundProofImageAsync(orderId);
+            if (image == null) return NotFound("No refund photo for this order.");
+            return Ok(new { proofImage = image });
         }
         catch (InvalidOperationException ex)
         {

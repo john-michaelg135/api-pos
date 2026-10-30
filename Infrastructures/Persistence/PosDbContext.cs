@@ -360,6 +360,20 @@ public class PosDbContext : DbContext
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
+        modelBuilder.Entity<OrderRefundProof>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).UseIdentityByDefaultColumn();
+            entity.Property(e => e.ProofImage).IsRequired().HasColumnType("text");
+            entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => e.OrderId).IsUnique();
+
+            entity.HasOne(e => e.Order)
+                .WithMany()
+                .HasForeignKey(e => e.OrderId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
         modelBuilder.Entity<PosUserPin>(entity =>
         {
             entity.HasKey(e => e.Id);
@@ -417,6 +431,7 @@ public class PosDbContext : DbContext
     public DbSet<CartItem> CartItems { get; set; }
     public DbSet<OrderStatusHistory> OrderStatusHistories { get; set; }
     public DbSet<OrderDeliveryConfirmation> OrderDeliveryConfirmations { get; set; }
+    public DbSet<OrderRefundProof> OrderRefundProofs { get; set; }
     public DbSet<PosUserPin> PosUserPins { get; set; }
     public DbSet<StartingCash> StartingCashEntries { get; set; }
 }
