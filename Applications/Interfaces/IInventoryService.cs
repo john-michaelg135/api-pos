@@ -11,15 +11,16 @@ public interface IInventoryService
     // POS-012: View current stock — per location or all
     Task<List<StockResponseDto>> GetStockByLocationAsync(int locationId);
     Task<List<StockResponseDto>> GetAllStockAsync();
+    Task<List<StockMovementResponseDto>> GetStockMovementsAsync(int? locationId, DateTime? from, DateTime? to);
 
     // POS-018: Low-stock alert query (qty < minThreshold, threshold > 0)
     Task<List<LowStockAlertDto>> GetLowStockAlertsAsync();
 
     // POS-011: Auto deduct stock on order confirm (called internally)
-    Task DeductStockAsync(int variationId, int locationId, int quantity);
+    Task DeductStockAsync(int variationId, int locationId, int quantity, int? orderId = null, string movementType = "Sale", string? reference = null);
 
     // POS-017: Restore stock when a refund is approved (inverse of deduct)
-    Task RestoreStockAsync(int variationId, int locationId, int quantity);
+    Task RestoreStockAsync(int variationId, int locationId, int quantity, int? orderId = null, string movementType = "Refund", string? reference = null);
 
     // POS-019 & 020: Stock adjustments
     Task<StockAdjustmentResponseDto> SubmitStockAdjustmentAsync(StockAdjustmentRequestDto dto);

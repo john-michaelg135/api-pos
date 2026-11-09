@@ -107,7 +107,13 @@ public class RefundService : IRefundService
         var now = DateTime.UtcNow;
 
         // US-POS-017: Restore the returned quantity back into stock
-        await _inventoryService.RestoreStockAsync(refund.VariationId, refund.LocationId, refund.QuantityToReturn);
+        await _inventoryService.RestoreStockAsync(
+            refund.VariationId,
+            refund.LocationId,
+            refund.QuantityToReturn,
+            refund.OrderId,
+            "Refund",
+            $"Refund #{refundRequestId}");
 
         // US-POS-017: Log the exact manager who approved
         refund.Status     = "Approved";

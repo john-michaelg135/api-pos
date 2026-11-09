@@ -84,6 +84,24 @@ public class InventoryController : ControllerBase
         return Ok(stock);
     }
 
+    [HttpGet("stock/movements")]
+    [ProducesResponseType(typeof(List<StockMovementResponseDto>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetStockMovements(
+        [FromQuery] int? locationId,
+        [FromQuery] DateTime? from,
+        [FromQuery] DateTime? to)
+    {
+        var user = HttpContext.GetCurrentUser();
+        if (user != null && !PosRoleAuthorization.IsAdministrator(user) && !locationId.HasValue)
+            return BadRequest("A branch is required when viewing stock inventory.");
+        if (locationId.HasValue
+            && PosRoleAuthorization.RequireLocationAccess(HttpContext, locationId) is { } denied)
+            return denied;
+
+        var movements = await _inventoryService.GetStockMovementsAsync(locationId, from, to);
+        return Ok(movements);
+    }
+
     // ── POS-018: Low-stock threshold alerts ──
 
     // GET api-pos/inventory/low-stock

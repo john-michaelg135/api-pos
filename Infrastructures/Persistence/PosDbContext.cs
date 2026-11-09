@@ -216,6 +216,20 @@ public class PosDbContext : DbContext
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
+        modelBuilder.Entity<StockMovement>(entity =>
+        {
+            entity.HasKey(e => e.StockMovementId);
+            entity.Property(e => e.StockMovementId).UseIdentityByDefaultColumn();
+            entity.Property(e => e.MovementType).IsRequired().HasMaxLength(30);
+            entity.Property(e => e.Reference).HasMaxLength(100);
+            entity.Property(e => e.Notes).HasColumnType("text");
+            entity.Property(e => e.OccurredAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => new { e.LocationId, e.VariationId, e.OccurredAt });
+            entity.HasOne(e => e.Variation).WithMany().HasForeignKey(e => e.VariationId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Location).WithMany().HasForeignKey(e => e.LocationId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Order).WithMany().HasForeignKey(e => e.OrderId).OnDelete(DeleteBehavior.SetNull);
+        });
+
         // ── RefundRequest (Sprint 3 — US-POS-016/017) ──
         modelBuilder.Entity<RefundRequest>(entity =>
         {
@@ -421,6 +435,7 @@ public class PosDbContext : DbContext
     public DbSet<OrderItem> OrderItems { get; set; }
     public DbSet<Payment> Payments { get; set; }
     public DbSet<Stock> Stocks { get; set; }
+    public DbSet<StockMovement> StockMovements { get; set; }
     public DbSet<StockReceiving> StockReceivings { get; set; }
     public DbSet<StockTransfer> StockTransfers { get; set; }
     public DbSet<StockTransferItem> StockTransferItems { get; set; }

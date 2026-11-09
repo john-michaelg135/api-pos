@@ -64,6 +64,7 @@ private readonly IAuditLogService _auditLogService;
 
         var now = DateTime.UtcNow;
 
+        var quantityBefore = stock?.Quantity ?? 0;
         if (stock == null)
         {
             // First time receiving this variation at this location
@@ -84,6 +85,14 @@ private readonly IAuditLogService _auditLogService;
             _db.Stocks.Update(stock);
         }
 
+        await AddMovementAsync(
+            dto.VariationId,
+            dto.LocationId,
+            dto.QuantityReceived,
+            "Receipt",
+            dto.TransferId.HasValue && dto.TransferId.Value > 0 ? $"Transfer #{dto.TransferId.Value}" : "Manual receipt",
+            null,
+            dto.Notes);
         await _db.SaveChangesAsync();
 
 
@@ -291,7 +300,13 @@ private readonly IAuditLogService _auditLogService;
     // POS-011: Auto deduct stock when order is confirmed
     // ────────────────────────────────────────────────────
 
-    public async Task DeductStockAsync(int variationId, int locationId, int quantity)
+    public async Task DeductStockAsync(
+        int variationId,
+        int locationId,
+        int quantity,
+        int? orderId = null,
+        string movementType = "Sale",
+        string? reference = null)
     {
         var stock = await _db.Stocks
             .FirstOrDefaultAsync(s => s.VariationId == variationId && s.LocationId == locationId);
@@ -306,6 +321,13 @@ private readonly IAuditLogService _auditLogService;
         stock.UpdatedAt = DateTime.UtcNow;
 
         _db.Stocks.Update(stock);
+        await AddMovementAsync(
+            variationId,
+            locationId,
+            -quantity,
+            movementType,
+            reference ?? (orderId.HasValue ? $"Order #{orderId.Value}" : null),
+            orderId);
         await _db.SaveChangesAsync();
     }
 
@@ -313,7 +335,13 @@ private readonly IAuditLogService _auditLogService;
     // POS-017: Restore stock when a refund is approved
     // ────────────────────────────────────────────────────
 
-    public async Task RestoreStockAsync(int variationId, int locationId, int quantity)
+    public async Task RestoreStockAsync(
+        int variationId,
+        int locationId,
+        int quantity,
+        int? orderId = null,
+        string movementType = "Refund",
+        string? reference = null)
     {
         var stock = await _db.Stocks
             .FirstOrDefaultAsync(s => s.VariationId == variationId && s.LocationId == locationId);
@@ -331,15 +359,270 @@ private readonly IAuditLogService _auditLogService;
                 UpdatedAt   = now
             };
             await _db.Stocks.AddAsync(stock);
+            await AddMovementAsync(
+                variationId,
+                locationId,
+                quantity,
+                movementType,
+                reference ?? (orderId.HasValue ? $"Order #{orderId.Value}" : null),
+                orderId);
         }
         else
         {
             stock.Quantity  += quantity;
             stock.UpdatedAt  = now;
             _db.Stocks.Update(stock);
+            await AddMovementAsync(
+                variationId,
+                locationId,
+                quantity,
+                movementType,
+                reference ?? (orderId.HasValue ? $"Order #{orderId.Value}" : null),
+                orderId);
         }
 
         await _db.SaveChangesAsync();
+    }
+
+    public async Task<List<StockMovementResponseDto>> GetStockMovementsAsync(
+        int? locationId,
+        DateTime? from,
+        DateTime? to)
+    {
+        var query = _db.StockMovements
+            .AsNoTracking()
+            .Include(m => m.Variation)
+                .ThenInclude(v => v!.Product)
+            .Include(m => m.Location)
+            .AsQueryable();
+
+        if (locationId.HasValue) query = query.Where(m => m.LocationId == locationId.Value);
+        if (from.HasValue) query = query.Where(m => m.OccurredAt >= from.Value);
+        if (to.HasValue) query = query.Where(m => m.OccurredAt < to.Value);
+
+        var movements = await query
+            .OrderByDescending(m => m.OccurredAt)
+            .ThenByDescending(m => m.StockMovementId)
+            .Take(1000)
+            .ToListAsync();
+
+        var existingKeys = movements
+            .Where(m => m.OrderId.HasValue)
+            .Select(m => (m.OrderId!.Value, m.VariationId, m.QuantityDelta))
+            .ToHashSet();
+
+        var legacyOrders = await _db.Orders
+            .AsNoTracking()
+            .Include(o => o.OrderItems)
+                .ThenInclude(item => item.ProductVariation)
+            .Include(o => o.Location)
+            .Where(o =>
+                o.LocationId.HasValue
+                && (!locationId.HasValue || o.LocationId == locationId.Value)
+                && o.PaymentStatus == "Paid"
+                && o.OrderStatus != "Cancelled"
+                && o.OrderStatus != "Voided"
+                && o.OrderStatus != "Refunded"
+                && (!from.HasValue || o.CreatedAt >= from.Value)
+                && (!to.HasValue || o.CreatedAt < to.Value))
+            .OrderByDescending(o => o.CreatedAt)
+            .Take(500)
+            .ToListAsync();
+
+        foreach (var order in legacyOrders)
+        {
+            foreach (var item in order.OrderItems)
+            {
+                var key = (order.OrderId, item.VariationId, -item.Quantity);
+                if (!existingKeys.Contains(key))
+                {
+                    movements.Add(new StockMovement
+                    {
+                        StockMovementId = -order.OrderId,
+                        VariationId = item.VariationId,
+                        LocationId = order.LocationId!.Value,
+                        QuantityDelta = -item.Quantity,
+                        MovementType = "Sale",
+                        Reference = order.OrderNumber,
+                        OrderId = order.OrderId,
+                        OccurredAt = order.CreatedAt,
+                        Variation = item.ProductVariation,
+                        Location = order.Location,
+                    });
+                }
+            }
+        }
+
+        var legacyReceivings = await _db.StockReceivings
+            .AsNoTracking()
+            .Include(receiving => receiving.Variation)
+                .ThenInclude(variation => variation!.Product)
+            .Include(receiving => receiving.Location)
+            .Where(receiving =>
+                (!locationId.HasValue || receiving.LocationId == locationId.Value)
+                && (!from.HasValue || receiving.ReceivedAt >= from.Value)
+                && (!to.HasValue || receiving.ReceivedAt < to.Value))
+            .ToListAsync();
+
+        movements.AddRange(legacyReceivings
+            .Where(receiving => !movements.Any(m =>
+                m.MovementType == "Receipt"
+                && m.LocationId == receiving.LocationId
+                && m.VariationId == receiving.VariationId
+                && m.QuantityDelta == receiving.QuantityReceived
+                && Math.Abs((m.OccurredAt - receiving.ReceivedAt).TotalSeconds) <= 5))
+            .Select(receiving => new StockMovement
+            {
+                StockMovementId = -1_000_000_000L - receiving.ReceivingId,
+                VariationId = receiving.VariationId,
+                LocationId = receiving.LocationId,
+                QuantityDelta = receiving.QuantityReceived,
+                MovementType = "Receipt",
+                Reference = receiving.TransferId is { Length: > 0 } ? $"Transfer #{receiving.TransferId}" : "Manual receipt",
+                Notes = receiving.Notes,
+                OccurredAt = receiving.ReceivedAt,
+                Variation = receiving.Variation,
+                Location = receiving.Location,
+            }));
+
+        var legacyAdjustments = await _db.StockAdjustments
+            .AsNoTracking()
+            .Include(adjustment => adjustment.Variation)
+                .ThenInclude(variation => variation!.Product)
+            .Include(adjustment => adjustment.Location)
+            .Where(adjustment =>
+                adjustment.Status == "Approved"
+                && adjustment.ApprovedAt.HasValue
+                && (!locationId.HasValue || adjustment.LocationId == locationId.Value)
+                && (!from.HasValue || adjustment.ApprovedAt >= from.Value)
+                && (!to.HasValue || adjustment.ApprovedAt < to.Value))
+            .ToListAsync();
+
+        movements.AddRange(legacyAdjustments
+            .Where(adjustment => !movements.Any(m =>
+                m.MovementType == "Adjustment"
+                && m.LocationId == adjustment.LocationId
+                && m.VariationId == adjustment.VariationId
+                && m.QuantityDelta == adjustment.Quantity
+                && Math.Abs((m.OccurredAt - adjustment.ApprovedAt!.Value).TotalSeconds) <= 5))
+            .Select(adjustment => new StockMovement
+            {
+                StockMovementId = -2_000_000_000L - adjustment.AdjustmentId,
+                VariationId = adjustment.VariationId,
+                LocationId = adjustment.LocationId,
+                QuantityDelta = adjustment.Quantity,
+                MovementType = "Adjustment",
+                Reference = $"Adjustment #{adjustment.AdjustmentId}",
+                Notes = adjustment.Reason,
+                OccurredAt = adjustment.ApprovedAt!.Value,
+                Variation = adjustment.Variation,
+                Location = adjustment.Location,
+            }));
+
+        var legacyRefunds = await _db.RefundRequests
+            .AsNoTracking()
+            .Include(refund => refund.Variation)
+                .ThenInclude(variation => variation!.Product)
+            .Where(refund =>
+                refund.Status == "Approved"
+                && refund.ApprovedAt.HasValue
+                && (!locationId.HasValue || refund.LocationId == locationId.Value)
+                && (!from.HasValue || refund.ApprovedAt >= from.Value)
+                && (!to.HasValue || refund.ApprovedAt < to.Value))
+            .ToListAsync();
+
+        movements.AddRange(legacyRefunds
+            .Where(refund => !movements.Any(m =>
+                m.MovementType == "Refund"
+                && m.OrderId == refund.OrderId
+                && m.VariationId == refund.VariationId
+                && m.QuantityDelta == refund.QuantityToReturn
+                && Math.Abs((m.OccurredAt - refund.ApprovedAt!.Value).TotalSeconds) <= 5))
+            .Select(refund => new StockMovement
+            {
+                StockMovementId = -3_000_000_000L - refund.RefundRequestId,
+                VariationId = refund.VariationId,
+                LocationId = refund.LocationId,
+                QuantityDelta = refund.QuantityToReturn,
+                MovementType = "Refund",
+                Reference = $"Refund #{refund.RefundRequestId}",
+                OrderId = refund.OrderId,
+                OccurredAt = refund.ApprovedAt!.Value,
+                Variation = refund.Variation,
+                Location = null,
+            }));
+
+        var variationIds = movements.Select(m => m.VariationId).Distinct().ToArray();
+        var currentStocks = await _db.Stocks
+            .AsNoTracking()
+            .Where(s => (!locationId.HasValue || s.LocationId == locationId.Value)
+                && (variationIds.Length == 0 || variationIds.Contains(s.VariationId)))
+            .ToDictionaryAsync(s => (s.LocationId, s.VariationId), s => s.Quantity);
+        var locationNames = await _db.Locations
+            .AsNoTracking()
+            .Where(location => !locationId.HasValue || location.LocationId == locationId.Value)
+            .ToDictionaryAsync(location => location.LocationId, location => location.LocationName);
+
+        return movements
+            .GroupBy(m => (m.LocationId, m.VariationId))
+            .SelectMany(group =>
+            {
+                var ordered = group
+                    .OrderBy(m => m.OccurredAt)
+                    .ThenBy(m => m.StockMovementId)
+                    .ToList();
+                var quantityAfterAll = currentStocks.GetValueOrDefault(group.Key);
+                var quantityBeforeAll = quantityAfterAll - ordered.Sum(m => m.QuantityDelta);
+                var running = quantityBeforeAll;
+                return ordered.Select(m =>
+                {
+                    var before = running;
+                    running += m.QuantityDelta;
+                    return new StockMovementResponseDto
+                    {
+                        StockMovementId = m.StockMovementId,
+                        VariationId = m.VariationId,
+                        VariationName = m.Variation?.VariationName ?? string.Empty,
+                        ProductName = m.Variation?.Product?.ProductName ?? string.Empty,
+                        LocationId = m.LocationId,
+                        LocationName = m.Location?.LocationName
+                            ?? locationNames.GetValueOrDefault(m.LocationId, string.Empty),
+                        QuantityDelta = m.QuantityDelta,
+                        MovementType = m.MovementType,
+                        Reference = m.Reference,
+                        Notes = m.Notes,
+                        OrderId = m.OrderId,
+                        OccurredAt = m.OccurredAt,
+                        QuantityBefore = before,
+                        QuantityAfter = running,
+                    };
+                });
+            })
+            .OrderByDescending(m => m.OccurredAt)
+            .ThenByDescending(m => m.StockMovementId)
+            .ToList();
+    }
+
+    private async Task AddMovementAsync(
+        int variationId,
+        int locationId,
+        int quantityDelta,
+        string movementType,
+        string? reference,
+        int? orderId,
+        string? notes = null)
+    {
+        await _db.StockMovements.AddAsync(new StockMovement
+        {
+            VariationId = variationId,
+            LocationId = locationId,
+            QuantityDelta = quantityDelta,
+            MovementType = movementType,
+            Reference = reference,
+            OrderId = orderId,
+            Notes = notes,
+            OccurredAt = DateTime.UtcNow,
+        });
     }
 
     // ────────────────────────────────────────────────────

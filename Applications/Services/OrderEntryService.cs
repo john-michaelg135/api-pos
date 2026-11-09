@@ -243,7 +243,7 @@ public class OrderEntryService : IOrderEntryService
             {
                 try
                 {
-                    await _inventoryService.DeductStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                    await _inventoryService.DeductStockAsync(item.VariationId, order.LocationId.Value, item.Quantity, order.OrderId, "Sale", order.OrderNumber);
                 }
                 catch (InvalidOperationException)
                 {
@@ -405,7 +405,7 @@ public class OrderEntryService : IOrderEntryService
             {
                 try
                 {
-                    await _inventoryService.DeductStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                    await _inventoryService.DeductStockAsync(item.VariationId, order.LocationId.Value, item.Quantity, order.OrderId, "Sale", order.OrderNumber);
                 }
                 catch (InvalidOperationException)
                 {
@@ -706,7 +706,7 @@ public class OrderEntryService : IOrderEntryService
             {
                 try
                 {
-                    await _inventoryService.DeductStockAsync(item.VariationId, 999, item.Quantity);
+                    await _inventoryService.DeductStockAsync(item.VariationId, 999, item.Quantity, order.OrderId, "Sale", order.OrderNumber);
                 }
                 catch (InvalidOperationException ex)
                 {

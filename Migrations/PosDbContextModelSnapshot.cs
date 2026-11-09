@@ -878,6 +878,57 @@ namespace api_pos.Migrations
                     b.ToTable("StockAdjustments");
                 });
 
+            modelBuilder.Entity("Domains.Entities.StockMovement", b =>
+                {
+                    b.Property<long>("StockMovementId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("StockMovementId"));
+
+                    b.Property<int>("LocationId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("MovementType")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<string>("Notes")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("OccurredAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<int?>("OrderId")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("PerformedBy")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("QuantityDelta")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Reference")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<int>("VariationId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("StockMovementId");
+
+                    b.HasIndex("OrderId");
+
+                    b.HasIndex("VariationId");
+
+                    b.HasIndex("LocationId", "VariationId", "OccurredAt");
+
+                    b.ToTable("StockMovements");
+                });
+
             modelBuilder.Entity("Domains.Entities.StockReceiving", b =>
                 {
                     b.Property<int>("ReceivingId")
@@ -1212,6 +1263,32 @@ namespace api_pos.Migrations
                         .IsRequired();
 
                     b.Navigation("Location");
+
+                    b.Navigation("Variation");
+                });
+
+            modelBuilder.Entity("Domains.Entities.StockMovement", b =>
+                {
+                    b.HasOne("Domains.Entities.Location", "Location")
+                        .WithMany()
+                        .HasForeignKey("LocationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Domains.Entities.Order", "Order")
+                        .WithMany()
+                        .HasForeignKey("OrderId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("Domains.Entities.ProductVariation", "Variation")
+                        .WithMany()
+                        .HasForeignKey("VariationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Location");
+
+                    b.Navigation("Order");
 
                     b.Navigation("Variation");
                 });

@@ -96,7 +96,7 @@ public class OrderManagementService : IOrderManagementService
             {
                 try
                 {
-                    await _inventoryService.DeductStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                    await _inventoryService.DeductStockAsync(item.VariationId, order.LocationId.Value, item.Quantity, order.OrderId, "Sale", order.OrderNumber);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -151,7 +151,7 @@ public class OrderManagementService : IOrderManagementService
             {
                 try
                 {
-                    await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                    await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity, order.OrderId, "Return", order.OrderNumber);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -292,7 +292,7 @@ public class OrderManagementService : IOrderManagementService
             {
                 try
                 {
-                    await _inventoryService.DeductStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                    await _inventoryService.DeductStockAsync(item.VariationId, order.LocationId.Value, item.Quantity, order.OrderId, "Sale", order.OrderNumber);
                 }
                 catch (InvalidOperationException)
                 {
@@ -595,7 +595,7 @@ public class OrderManagementService : IOrderManagementService
                 {
                     try
                     {
-                        await _inventoryService.DeductStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                        await _inventoryService.DeductStockAsync(item.VariationId, order.LocationId.Value, item.Quantity, order.OrderId, "Sale", order.OrderNumber);
                     }
                     catch (InvalidOperationException ex)
                     {
@@ -614,7 +614,7 @@ public class OrderManagementService : IOrderManagementService
                 {
                     try
                     {
-                        await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                        await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity, order.OrderId, "Return", order.OrderNumber);
                     }
                     catch (InvalidOperationException ex)
                     {
@@ -632,7 +632,7 @@ public class OrderManagementService : IOrderManagementService
                 {
                     try
                     {
-                        await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                        await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity, order.OrderId, "Refund", order.OrderNumber);
                     }
                     catch (InvalidOperationException ex)
                     {
@@ -897,7 +897,7 @@ public class OrderManagementService : IOrderManagementService
             {
                 try
                 {
-                    await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                    await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity, order.OrderId, "Refund", order.OrderNumber);
                 }
                 catch (InvalidOperationException)
                 {
@@ -1063,7 +1063,7 @@ public class OrderManagementService : IOrderManagementService
             {
                 try
                 {
-                    await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity);
+                    await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity, order.OrderId, "Void", order.OrderNumber);
                 }
                 catch (InvalidOperationException) {}
             }

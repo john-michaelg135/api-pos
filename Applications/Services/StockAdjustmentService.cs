@@ -112,11 +112,21 @@ public class StockAdjustmentService : IStockAdjustmentService
         // US-POS-020: Execute the actual stock deduction or addition
         if (adjustment.Quantity < 0)
         {
-            await _inventoryService.DeductStockAsync(adjustment.VariationId, adjustment.LocationId, Math.Abs(adjustment.Quantity));
+            await _inventoryService.DeductStockAsync(
+                adjustment.VariationId,
+                adjustment.LocationId,
+                Math.Abs(adjustment.Quantity),
+                movementType: "Adjustment",
+                reference: $"Adjustment #{adjustment.AdjustmentId}");
         }
         else
         {
-            await _inventoryService.RestoreStockAsync(adjustment.VariationId, adjustment.LocationId, adjustment.Quantity);
+            await _inventoryService.RestoreStockAsync(
+                adjustment.VariationId,
+                adjustment.LocationId,
+                adjustment.Quantity,
+                movementType: "Adjustment",
+                reference: $"Adjustment #{adjustment.AdjustmentId}");
         }
 
         // US-POS-020: Permanently log the approver's user_id
