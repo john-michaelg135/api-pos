@@ -57,6 +57,7 @@ public class StartingCashDto
 public class StartingCashController : ControllerBase
 {
     private const decimal MaxAmount = 10_000_000m;
+    private const decimal MaxStartingCashAmount = 999_999.99m;
 
     private readonly PosDbContext _db;
     private readonly IPortalUserDirectory _portalUserDirectory;
@@ -206,7 +207,7 @@ public class StartingCashController : ControllerBase
     {
         if (dto == null) return BadRequest("Starting cash is required.");
         if (dto.Amount < 0) return BadRequest("Starting cash cannot be negative.");
-        if (dto.Amount > MaxAmount) return BadRequest("Starting cash is unrealistically large. Please check the amount.");
+        if (dto.Amount > MaxStartingCashAmount) return BadRequest("Starting cash must not exceed 999,999.99.");
 
         var (authUserId, name, user) = Identity(dto.CashierName);
         var loc = ResolveLocation(user, dto.LocationId);
