@@ -384,6 +384,30 @@ private readonly IAuditLogService _auditLogService;
         await _db.SaveChangesAsync();
     }
 
+    public async Task RecordStockLossAsync(
+        int variationId,
+        int locationId,
+        int quantity,
+        int? orderId = null,
+        string? reference = null,
+        string? notes = null)
+    {
+        if (quantity <= 0)
+            throw new InvalidOperationException("Stock loss quantity must be greater than zero.");
+
+        // The sale deduction already removed these units from stock. Keep the loss
+        // as a separate negative ledger movement without changing the stock row.
+        await AddMovementAsync(
+            variationId,
+            locationId,
+            -quantity,
+            "Loss",
+            reference ?? (orderId.HasValue ? $"Order #{orderId.Value}" : null),
+            orderId,
+            notes ?? $"System loss: {quantity} unsellable unit(s).");
+        await _db.SaveChangesAsync();
+    }
+
     public async Task<List<StockMovementResponseDto>> GetStockMovementsAsync(
         int? locationId,
         DateTime? from,
@@ -422,7 +446,6 @@ private readonly IAuditLogService _auditLogService;
                 && o.PaymentStatus == "Paid"
                 && o.OrderStatus != "Cancelled"
                 && o.OrderStatus != "Voided"
-                && o.OrderStatus != "Refunded"
                 && (!from.HasValue || o.CreatedAt >= from.Value)
                 && (!to.HasValue || o.CreatedAt < to.Value))
             .OrderByDescending(o => o.CreatedAt)
@@ -563,6 +586,32 @@ private readonly IAuditLogService _auditLogService;
             .Where(location => !locationId.HasValue || location.LocationId == locationId.Value)
             .ToDictionaryAsync(location => location.LocationId, location => location.LocationName);
 
+        // Older system-loss rows were initially recorded with a zero delta. Recover
+        // their displayed quantity from the originating order item.
+        var legacyLosses = movements
+            .Where(m => m.MovementType == "Loss" && m.QuantityDelta == 0 && m.OrderId.HasValue)
+            .Select(m => m.OrderId!.Value)
+            .Distinct()
+            .ToArray();
+        if (legacyLosses.Length > 0)
+        {
+            var lossQuantities = await _db.OrderItems
+                .AsNoTracking()
+                .Where(item => legacyLosses.Contains(item.OrderId))
+                .GroupBy(item => new { item.OrderId, item.VariationId })
+                .Select(group => new { group.Key.OrderId, group.Key.VariationId, Quantity = group.Sum(item => item.Quantity) })
+                .ToListAsync();
+
+            foreach (var movement in movements.Where(m => m.MovementType == "Loss" && m.QuantityDelta == 0 && m.OrderId.HasValue))
+            {
+                var quantity = lossQuantities
+                    .FirstOrDefault(item => item.OrderId == movement.OrderId!.Value && item.VariationId == movement.VariationId)
+                    ?.Quantity;
+                if (quantity.HasValue)
+                    movement.QuantityDelta = -quantity.Value;
+            }
+        }
+
         return movements
             .GroupBy(m => (m.LocationId, m.VariationId))
             .SelectMany(group =>
@@ -572,12 +621,12 @@ private readonly IAuditLogService _auditLogService;
                     .ThenBy(m => m.StockMovementId)
                     .ToList();
                 var quantityAfterAll = currentStocks.GetValueOrDefault(group.Key);
-                var quantityBeforeAll = quantityAfterAll - ordered.Sum(m => m.QuantityDelta);
-                var running = quantityBeforeAll;
-                return ordered.Select(m =>
-                {
-                    var before = running;
-                    running += m.QuantityDelta;
+                    var quantityBeforeAll = quantityAfterAll - ordered.Sum(m => m.QuantityDelta);
+                    var running = quantityBeforeAll;
+                    return ordered.Select(m =>
+                    {
+                        var before = running;
+                        running += m.QuantityDelta;
                     return new StockMovementResponseDto
                     {
                         StockMovementId = m.StockMovementId,

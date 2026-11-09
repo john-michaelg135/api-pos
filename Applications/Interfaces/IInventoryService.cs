@@ -21,6 +21,7 @@ public interface IInventoryService
 
     // POS-017: Restore stock when a refund is approved (inverse of deduct)
     Task RestoreStockAsync(int variationId, int locationId, int quantity, int? orderId = null, string movementType = "Refund", string? reference = null);
+    Task RecordStockLossAsync(int variationId, int locationId, int quantity, int? orderId = null, string? reference = null, string? notes = null);
 
     // POS-019 & 020: Stock adjustments
     Task<StockAdjustmentResponseDto> SubmitStockAdjustmentAsync(StockAdjustmentRequestDto dto);

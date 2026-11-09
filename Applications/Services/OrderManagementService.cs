@@ -625,14 +625,30 @@ public class OrderManagementService : IOrderManagementService
         }
         else if (string.Equals(targetStatus, "Refunded", StringComparison.OrdinalIgnoreCase))
         {
-            // Restore reserved stock if refunded directly
             if (order.LocationId.HasValue)
             {
+                var isUnsellable = order.RejectionRemarks != null &&
+                    (order.RejectionRemarks.Contains("(Unsellable)", StringComparison.OrdinalIgnoreCase) ||
+                     order.RejectionRemarks.StartsWith("Damaged/Expired", StringComparison.OrdinalIgnoreCase));
+
                 foreach (var item in order.OrderItems)
                 {
                     try
                     {
-                        await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity, order.OrderId, "Refund", order.OrderNumber);
+                        if (isUnsellable)
+                        {
+                            await _inventoryService.RecordStockLossAsync(
+                                item.VariationId,
+                                order.LocationId.Value,
+                                item.Quantity,
+                                order.OrderId,
+                                order.OrderNumber,
+                                order.RejectionRemarks);
+                        }
+                        else
+                        {
+                            await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity, order.OrderId, "Refund", order.OrderNumber);
+                        }
                     }
                     catch (InvalidOperationException ex)
                     {
@@ -783,22 +799,29 @@ public class OrderManagementService : IOrderManagementService
             throw new InvalidOperationException($"Order {order.OrderNumber} still has an unpaid balance. Complete the remaining GCash payment before requesting a refund.");
 
         var image = NormalizeProofImage(proofImage);
-        var isGcashInstitutional = order.OrderType == "Institutional" &&
-            string.Equals(order.PaymentMethod, "GCash", StringComparison.OrdinalIgnoreCase);
+        var isPaidInstitutional = order.OrderType == "Institutional" &&
+            (string.Equals(order.PaymentMethod, "Cash", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(order.PaymentMethod, "GCash", StringComparison.OrdinalIgnoreCase));
 
         // A shipped institutional order that Lalamove failed to deliver is refunded with
         // "Item not delivered" (restocked, since the courier returns the goods).
         var isFailedDelivery = order.OrderType == "Institutional" && order.OrderStatus == "Shipped";
+        var isDeliveredInstitutional = order.OrderType == "Institutional" &&
+            (string.Equals(order.OrderStatus, "Completed", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(order.OrderStatus, "Delivered", StringComparison.OrdinalIgnoreCase));
+        if (isPaidInstitutional && !isFailedDelivery && !isDeliveredInstitutional)
+            throw new InvalidOperationException($"Paid institutional order {order.OrderNumber} cannot request a standard refund before delivery is confirmed.");
+
         if (isFailedDelivery && !string.Equals(reason?.Trim(), FailedDeliveryReason, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException($"Order {order.OrderNumber} hasn't been delivered yet. Only a failed delivery can be refunded before delivery is confirmed.");
 
-        // Otherwise GCash institutional customers can only ask for a refund once the order is delivered.
-        if (isGcashInstitutional && !isFailedDelivery && order.OrderStatus != "Completed")
-            throw new InvalidOperationException($"Order {order.OrderNumber} hasn't been delivered yet. GCash institutional orders can only be refunded after delivery is confirmed.");
-        if ((isGcashInstitutional || isFailedDelivery) && image == null)
+        // Paid institutional customers can only ask for a refund once the order is delivered.
+        if (isPaidInstitutional && !isFailedDelivery && !isDeliveredInstitutional)
+            throw new InvalidOperationException($"Order {order.OrderNumber} hasn't been delivered yet. Paid institutional orders can only be refunded after delivery is confirmed.");
+        if ((isPaidInstitutional || isFailedDelivery) && image == null)
             throw new InvalidOperationException(isFailedDelivery
                 ? "Attach proof that the item wasn't delivered (e.g. Lalamove's failed-delivery screen)."
-                : "Attach a photo as proof for refunds on GCash-paid institutional orders.");
+                : "Attach a photo as proof for refunds on paid institutional orders.");
 
         if (image != null)
         {
@@ -902,6 +925,26 @@ public class OrderManagementService : IOrderManagementService
                 catch (InvalidOperationException)
                 {
                     // Stock may not be tracked for this item/location
+                }
+            }
+        }
+        else if (order.LocationId.HasValue && isUnsellable)
+        {
+            foreach (var item in order.OrderItems)
+            {
+                try
+                {
+                    await _inventoryService.RecordStockLossAsync(
+                        item.VariationId,
+                        order.LocationId.Value,
+                        item.Quantity,
+                        order.OrderId,
+                        order.OrderNumber,
+                        order.RejectionRemarks);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    System.Console.WriteLine($"ApproveRefundAsync: Stock loss logging skipped for VariationId {item.VariationId} at Location {order.LocationId.Value}: {ex.Message}");
                 }
             }
         }

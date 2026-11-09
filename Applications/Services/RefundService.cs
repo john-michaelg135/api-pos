@@ -106,14 +106,29 @@ public class RefundService : IRefundService
 
         var now = DateTime.UtcNow;
 
-        // US-POS-017: Restore the returned quantity back into stock
-        await _inventoryService.RestoreStockAsync(
-            refund.VariationId,
-            refund.LocationId,
-            refund.QuantityToReturn,
-            refund.OrderId,
-            "Refund",
-            $"Refund #{refundRequestId}");
+        var isUnsellable = refund.Reason.Contains("(Unsellable)", StringComparison.OrdinalIgnoreCase) ||
+            refund.Reason.StartsWith("Damaged/Expired", StringComparison.OrdinalIgnoreCase);
+
+        if (isUnsellable)
+        {
+            await _inventoryService.RecordStockLossAsync(
+                refund.VariationId,
+                refund.LocationId,
+                refund.QuantityToReturn,
+                refund.OrderId,
+                $"Refund #{refundRequestId}",
+                refund.Reason);
+        }
+        else
+        {
+            await _inventoryService.RestoreStockAsync(
+                refund.VariationId,
+                refund.LocationId,
+                refund.QuantityToReturn,
+                refund.OrderId,
+                "Refund",
+                $"Refund #{refundRequestId}");
+        }
 
         // US-POS-017: Log the exact manager who approved
         refund.Status     = "Approved";

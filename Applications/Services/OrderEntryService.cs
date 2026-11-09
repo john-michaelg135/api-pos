@@ -587,6 +587,30 @@ public class OrderEntryService : IOrderEntryService
 
         await _db.SaveChangesAsync();
 
+        // Institutional orders reserve/consume branch stock when placed. Delivery
+        // confirmation only records fulfillment and must not restore these units.
+        if (order.LocationId.HasValue)
+        {
+            foreach (var item in pricedItems)
+            {
+                try
+                {
+                    await _inventoryService.DeductStockAsync(
+                        item.Item.VariationId,
+                        order.LocationId.Value,
+                        item.Item.Quantity,
+                        order.OrderId,
+                        "Sale",
+                        order.OrderNumber);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    System.Console.WriteLine(
+                        $"CreateInstitutionalOrderAsync: Stock deduction skipped for VariationId {item.Item.VariationId} at Location {order.LocationId.Value}: {ex.Message}");
+                }
+            }
+        }
+
         return (await BuildOrderResponse(order.OrderId))!;
     }
 
