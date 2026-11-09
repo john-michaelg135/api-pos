@@ -6,11 +6,15 @@ using Infrastructures.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Http;
 using Api.Middlewares;
+using System.Globalization;
+using System.Text.RegularExpressions;
 
 namespace Applications.Services;
 
 public class OrderEntryService : IOrderEntryService
 {
+    private const decimal MinimumInstitutionalWeightKg = 20m;
+
     private readonly PosDbContext _db;
     private readonly IInventoryService _inventoryService;
     private readonly IHttpContextAccessor _httpContextAccessor;
@@ -462,13 +466,28 @@ public class OrderEntryService : IOrderEntryService
         if (string.IsNullOrWhiteSpace(dto.CustomVariationNotes))
             throw new InvalidOperationException("Notes / customization is required for institutional orders.");
 
-        // Validate all variation IDs
+        // Validate all variation IDs and calculate the total product weight. Variation
+        // names are the source of truth for package sizes (for example, SKU|Pouch|500g).
+        var variationIds = dto.Items.Select(item => item.VariationId).Distinct().ToList();
+        var variations = await _db.ProductVariations
+            .Where(variation => variationIds.Contains(variation.VariationId))
+            .ToDictionaryAsync(variation => variation.VariationId);
+
+        decimal totalWeightKg = 0m;
         foreach (var cartItem in dto.Items)
         {
-            var variationExists = await _db.ProductVariations.AnyAsync(v => v.VariationId == cartItem.VariationId);
-            if (!variationExists)
+            if (!variations.TryGetValue(cartItem.VariationId, out var variation))
                 throw new InvalidOperationException($"Product variation with ID {cartItem.VariationId} not found.");
+
+            var packageWeightKg = ParseVariationWeightKg(variation.VariationName);
+            if (!packageWeightKg.HasValue)
+                throw new InvalidOperationException($"The weight for variation '{variation.VariationName}' could not be determined. Institutional orders require a weight-based variation.");
+
+            totalWeightKg += packageWeightKg.Value * cartItem.Quantity;
         }
+
+        if (totalWeightKg < MinimumInstitutionalWeightKg)
+            throw new InvalidOperationException($"Institutional orders must contain at least {MinimumInstitutionalWeightKg:0} kg of products. This order contains {totalWeightKg:0.###} kg.");
 
         var isCash = string.Equals(dto.PaymentMethod, "Cash", StringComparison.OrdinalIgnoreCase);
         var isGcash = string.Equals(dto.PaymentMethod, "GCash", StringComparison.OrdinalIgnoreCase);
@@ -569,6 +588,29 @@ public class OrderEntryService : IOrderEntryService
         await _db.SaveChangesAsync();
 
         return (await BuildOrderResponse(order.OrderId))!;
+    }
+
+    private static decimal? ParseVariationWeightKg(string variationName)
+    {
+        var match = Regex.Match(
+            variationName ?? string.Empty,
+            @"(?<value>\d+(?:[.,]\d+)?)\s*(?<unit>kg|g)\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        if (!match.Success ||
+            !decimal.TryParse(
+                match.Groups["value"].Value.Replace(',', '.'),
+                NumberStyles.AllowDecimalPoint,
+                CultureInfo.InvariantCulture,
+                out var value) ||
+            value <= 0)
+        {
+            return null;
+        }
+
+        return match.Groups["unit"].Value.Equals("kg", StringComparison.OrdinalIgnoreCase)
+            ? value
+            : value / 1000m;
     }
 
 
