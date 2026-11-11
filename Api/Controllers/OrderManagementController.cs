@@ -216,7 +216,7 @@ public class OrderManagementController : ControllerBase
         if (dto == null || string.IsNullOrWhiteSpace(dto.Reason)) return BadRequest("Refund reason is required.");
         try
         {
-            var order = await _orderManagementService.RequestRefundAsync(orderId, dto.Reason, dto.ProofImage);
+            var order = await _orderManagementService.RequestRefundAsync(orderId, dto.Reason, dto.ProofImage, dto.Items);
             if (order == null) return NotFound($"Order with ID {orderId} not found.");
             return Ok(order);
         }

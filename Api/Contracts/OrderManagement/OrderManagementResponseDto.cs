@@ -51,4 +51,8 @@ public class OrderManagementResponseDto
     public DeliveryConfirmationResponseDto? DeliveryConfirmation { get; set; }
     // Photo itself is at GET orders/{orderId}/refund-proof.
     public bool HasRefundProof { get; set; }
+
+    // Value of the items already refunded, and of the items in a refund request awaiting approval.
+    public decimal RefundedAmount { get; set; }
+    public decimal PendingRefundAmount { get; set; }
 }

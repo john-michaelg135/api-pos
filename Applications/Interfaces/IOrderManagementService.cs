@@ -27,7 +27,7 @@ public interface IOrderManagementService
     Task<OrderTrackingDto?> GetOrderTrackingAsync(int orderId);
 
     // POS-016 & 017: Refunds
-    Task<OrderManagementResponseDto?> RequestRefundAsync(int orderId, string reason, string? proofImage);
+    Task<OrderManagementResponseDto?> RequestRefundAsync(int orderId, string reason, string? proofImage, IReadOnlyList<RefundItemDto>? items = null);
     Task<string?> GetRefundProofImageAsync(int orderId);
     Task<OrderManagementResponseDto?> ApproveRefundAsync(int orderId, int approvedBy, string? pinCode);
     Task<OrderManagementResponseDto?> RejectRefundAsync(int orderId, int rejectedBy, string reason, string? pinCode);

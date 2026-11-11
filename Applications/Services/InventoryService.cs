@@ -554,13 +554,22 @@ private readonly IAuditLogService _auditLogService;
                 && (!to.HasValue || refund.ApprovedAt < to.Value))
             .ToListAsync();
 
+        // Refunds approved before restocks were logged as movements get a stand-in row. Not for
+        // unsellable refunds: those units were written off (a Loss row), never put back in stock.
         movements.AddRange(legacyRefunds
-            .Where(refund => !movements.Any(m =>
-                m.MovementType == "Refund"
-                && m.OrderId == refund.OrderId
-                && m.VariationId == refund.VariationId
-                && m.QuantityDelta == refund.QuantityToReturn
-                && Math.Abs((m.OccurredAt - refund.ApprovedAt!.Value).TotalSeconds) <= 5))
+            .Where(refund =>
+                !refund.Reason.Contains("(Unsellable)", StringComparison.OrdinalIgnoreCase)
+                && !refund.Reason.StartsWith("Damaged/Expired", StringComparison.OrdinalIgnoreCase)
+                && !movements.Any(m =>
+                    m.MovementType == "Loss"
+                    && m.OrderId == refund.OrderId
+                    && m.VariationId == refund.VariationId)
+                && !movements.Any(m =>
+                    m.MovementType == "Refund"
+                    && m.OrderId == refund.OrderId
+                    && m.VariationId == refund.VariationId
+                    && m.QuantityDelta == refund.QuantityToReturn
+                    && Math.Abs((m.OccurredAt - refund.ApprovedAt!.Value).TotalSeconds) <= 5))
             .Select(refund => new StockMovement
             {
                 StockMovementId = -3_000_000_000L - refund.RefundRequestId,
@@ -620,13 +629,16 @@ private readonly IAuditLogService _auditLogService;
                     .OrderBy(m => m.OccurredAt)
                     .ThenBy(m => m.StockMovementId)
                     .ToList();
+                // A Loss writes off units the sale already took out of stock, so it shows how
+                // many were lost but doesn't move the balance.
+                static int StockEffect(StockMovement m) => m.MovementType == "Loss" ? 0 : m.QuantityDelta;
                 var quantityAfterAll = currentStocks.GetValueOrDefault(group.Key);
-                    var quantityBeforeAll = quantityAfterAll - ordered.Sum(m => m.QuantityDelta);
+                    var quantityBeforeAll = quantityAfterAll - ordered.Sum(StockEffect);
                     var running = quantityBeforeAll;
                     return ordered.Select(m =>
                     {
                         var before = running;
-                        running += m.QuantityDelta;
+                        running += StockEffect(m);
                     return new StockMovementResponseDto
                     {
                         StockMovementId = m.StockMovementId,

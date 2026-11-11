@@ -141,12 +141,31 @@ public class CustomerPortalService : ICustomerPortalService
             string.Equals(order.OrderStatus, "Refunded", StringComparison.OrdinalIgnoreCase))
             return RefundResult.Fail("A refund request has already been submitted for this order.");
 
+        // One approved refund per order, same as in the store.
+        if (await _db.RefundRequests.AnyAsync(r => r.OrderId == order.OrderId && r.Status == "Approved"))
+            return RefundResult.Fail("This order has already been refunded once.");
+
+        // Only what hasn't been refunded already.
+        var alreadyRefunded = await _db.RefundRequests
+            .AsNoTracking()
+            .Where(r => r.OrderId == order.OrderId && (r.Status == "Approved" || r.Status == "Pending"))
+            .GroupBy(r => r.VariationId)
+            .Select(g => new { VariationId = g.Key, Quantity = g.Sum(r => r.QuantityToReturn) })
+            .ToDictionaryAsync(r => r.VariationId, r => r.Quantity);
+        var remaining = order.OrderItems
+            .GroupBy(i => i.VariationId)
+            .Select(g => new { VariationId = g.Key, Quantity = g.Sum(i => i.Quantity) - alreadyRefunded.GetValueOrDefault(g.Key) })
+            .Where(r => r.Quantity > 0)
+            .ToList();
+        if (remaining.Count == 0)
+            return RefundResult.Fail("Everything in this order has already been refunded.");
+
         order.OrderStatus = "Refund Requested";
         order.RejectionRemarks = reason;
         order.UpdatedAt = DateTime.UtcNow;
         _db.Orders.Update(order);
 
-        foreach (var item in order.OrderItems)
+        foreach (var item in remaining)
         {
             var refundRequest = new RefundRequest
             {
@@ -156,7 +175,7 @@ public class CustomerPortalService : ICustomerPortalService
                 QuantityToReturn = item.Quantity,
                 Reason = reason,
                 Status = "Pending",
-                RequestedBy = order.CustomerId ?? 0, // Customer initiated
+                RequestedBy = 0, // The customer (see the order); 0 keeps it apart from staff numbers
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow
             };

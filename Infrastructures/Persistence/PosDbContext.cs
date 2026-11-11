@@ -393,6 +393,18 @@ public class PosDbContext : DbContext
                 .OnDelete(DeleteBehavior.Cascade);
         });
 
+        modelBuilder.Entity<PosStaffUser>(entity =>
+        {
+            entity.ToTable("PosStaffUsers");
+            entity.HasKey(e => e.Id);
+            // From 1000 so a real person never shares a number with the old placeholder 1.
+            entity.Property(e => e.Id).UseIdentityByDefaultColumn().HasIdentityOptions(startValue: 1000);
+            entity.Property(e => e.AuthUserId).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.Username).IsRequired().HasMaxLength(150);
+            entity.Property(e => e.DisplayName).HasMaxLength(200);
+            entity.HasIndex(e => e.AuthUserId).IsUnique();
+        });
+
         modelBuilder.Entity<PosUserPin>(entity =>
         {
             entity.HasKey(e => e.Id);
@@ -453,5 +465,6 @@ public class PosDbContext : DbContext
     public DbSet<OrderDeliveryConfirmation> OrderDeliveryConfirmations { get; set; }
     public DbSet<OrderRefundProof> OrderRefundProofs { get; set; }
     public DbSet<PosUserPin> PosUserPins { get; set; }
+    public DbSet<PosStaffUser> PosStaffUsers { get; set; }
     public DbSet<StartingCash> StartingCashEntries { get; set; }
 }

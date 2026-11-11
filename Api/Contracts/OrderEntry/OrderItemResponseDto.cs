@@ -9,4 +9,8 @@ public class OrderItemResponseDto
     public int Quantity { get; set; }
     public decimal UnitPrice { get; set; }
     public decimal Subtotal { get; set; }
+
+    // Filled on order-management lists: units already refunded, and units in a refund request awaiting approval.
+    public int RefundedQuantity { get; set; }
+    public int PendingRefundQuantity { get; set; }
 }

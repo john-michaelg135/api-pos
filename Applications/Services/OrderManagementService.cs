@@ -16,10 +16,12 @@ public class OrderManagementService : IOrderManagementService
     private readonly IInventoryService _inventoryService;
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly IAuditLogService _auditLogService;
+    private readonly IPosStaffIdentity _staff;
 
-    public OrderManagementService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor, IAuditLogService auditLogService)
+    public OrderManagementService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor, IAuditLogService auditLogService, IPosStaffIdentity staff)
     {
         _db = db;
+        _staff = staff;
         _inventoryService = inventoryService;
         _httpContextAccessor = httpContextAccessor;
         _auditLogService = auditLogService;
@@ -81,7 +83,7 @@ public class OrderManagementService : IOrderManagementService
         var currentStatus = order.OrderStatus;
         var now = DateTime.UtcNow;
         order.OrderStatus = "Processing";
-        order.ApprovedBy = dto.ApprovedBy;
+        order.ApprovedBy = await _staff.CurrentStaffIdAsync() ?? dto.ApprovedBy;
         order.ApprovedAt = now;
         order.UpdatedAt = now;
 
@@ -137,7 +139,7 @@ public class OrderManagementService : IOrderManagementService
         var currentStatus = order.OrderStatus;
         var now = DateTime.UtcNow;
         order.OrderStatus = "Cancelled";
-        order.ApprovedBy = dto.RejectedBy;
+        order.ApprovedBy = await _staff.CurrentStaffIdAsync() ?? dto.RejectedBy;
         order.RejectionRemarks = dto.RejectionRemarks;
         order.UpdatedAt = now;
 
@@ -265,7 +267,7 @@ public class OrderManagementService : IOrderManagementService
         var now = DateTime.UtcNow;
         order.OrderStatus   = "Completed";
         order.PaymentStatus = "Paid";
-        order.ApprovedBy    = confirmedBy;
+        order.ApprovedBy    = await _staff.CurrentStaffIdAsync() ?? confirmedBy;
         order.ApprovedAt    = now;
         order.UpdatedAt     = now;
 
@@ -452,6 +454,55 @@ public class OrderManagementService : IOrderManagementService
     }
 
     // Adds delivery confirmations and refund-proof flags (never the photos) to a page of orders.
+    // Units refunded / awaiting refund approval per item, and their value.
+    private async Task AttachRefundQuantitiesAsync(List<OrderManagementResponseDto> orders, List<int> orderIds)
+    {
+        var totals = await _db.RefundRequests
+            .AsNoTracking()
+            .Where(r => orderIds.Contains(r.OrderId) && (r.Status == "Approved" || r.Status == "Pending"))
+            .GroupBy(r => new { r.OrderId, r.VariationId })
+            .Select(g => new
+            {
+                g.Key.OrderId,
+                g.Key.VariationId,
+                Approved = g.Sum(r => r.Status == "Approved" ? r.QuantityToReturn : 0),
+                Pending = g.Sum(r => r.Status == "Pending" ? r.QuantityToReturn : 0),
+            })
+            .ToListAsync();
+        var byOrder = totals.ToLookup(t => t.OrderId);
+
+        foreach (var order in orders)
+        {
+            var rows = byOrder[order.OrderId].ToList();
+            if (rows.Count == 0)
+            {
+                // Refunds from before item refunds existed covered the whole order.
+                if (order.OrderStatus == "Refunded")
+                    foreach (var item in order.Items) item.RefundedQuantity = item.Quantity;
+                else if (order.OrderStatus == "Refund Requested")
+                    foreach (var item in order.Items) item.PendingRefundQuantity = item.Quantity;
+            }
+            else
+            {
+                // An order can list the same variation on more than one line: fill the lines in order.
+                foreach (var row in rows)
+                {
+                    int approved = row.Approved, waiting = row.Pending;
+                    foreach (var item in order.Items.Where(i => i.VariationId == row.VariationId))
+                    {
+                        item.RefundedQuantity = Math.Min(approved, item.Quantity);
+                        approved -= item.RefundedQuantity;
+                        item.PendingRefundQuantity = Math.Min(waiting, item.Quantity - item.RefundedQuantity);
+                        waiting -= item.PendingRefundQuantity;
+                    }
+                }
+            }
+
+            order.RefundedAmount = order.Items.Sum(i => i.UnitPrice * i.RefundedQuantity);
+            order.PendingRefundAmount = order.Items.Sum(i => i.UnitPrice * i.PendingRefundQuantity);
+        }
+    }
+
     private async Task AttachDeliveryConfirmationsAsync(List<OrderManagementResponseDto> orders)
     {
         var orderIds = orders.Select(o => o.OrderId).ToList();
@@ -464,6 +515,16 @@ public class OrderManagementService : IOrderManagementService
             .ToListAsync()).ToHashSet();
         foreach (var order in orders)
             order.HasRefundProof = withRefundProof.Contains(order.OrderId);
+
+        await AttachRefundQuantitiesAsync(orders, orderIds);
+
+        var names = await _staff.NamesAsync(orders
+            .SelectMany(o => o.StatusHistory)
+            .Where(h => h.ChangedBy.HasValue)
+            .Select(h => h.ChangedBy!.Value));
+        foreach (var history in orders.SelectMany(o => o.StatusHistory))
+            if (history.ChangedBy.HasValue && names.TryGetValue(history.ChangedBy.Value, out var name))
+                history.ChangedByName = name;
 
         var confirmations = await _db.OrderDeliveryConfirmations
             .AsNoTracking()
@@ -570,7 +631,7 @@ public class OrderManagementService : IOrderManagementService
 
         var now = DateTime.UtcNow;
         order.OrderStatus = targetStatus;
-        order.ApprovedBy = dto.UpdatedBy;
+        order.ApprovedBy = await _staff.CurrentStaffIdAsync() ?? dto.UpdatedBy;
         order.UpdatedAt = now;
 
         var historyRemark = "Status updated via panel";
@@ -774,7 +835,7 @@ public class OrderManagementService : IOrderManagementService
 
     private const string FailedDeliveryReason = "Item not delivered";
 
-    public async Task<OrderManagementResponseDto?> RequestRefundAsync(int orderId, string reason, string? proofImage)
+    public async Task<OrderManagementResponseDto?> RequestRefundAsync(int orderId, string reason, string? proofImage, IReadOnlyList<RefundItemDto>? items = null)
     {
         var order = await _db.Orders
             .Include(o => o.OrderItems)
@@ -790,6 +851,13 @@ public class OrderManagementService : IOrderManagementService
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         if (currentUser?.SubRole == "Cashier" && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
             throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
+
+        if (order.OrderStatus == "Refund Requested")
+            throw new InvalidOperationException($"Order {order.OrderNumber} already has a refund request waiting for a manager.");
+
+        // One approved refund per order: after a partial refund the rest of the sale stands.
+        if (await _db.RefundRequests.AnyAsync(r => r.OrderId == order.OrderId && r.Status == "Approved"))
+            throw new InvalidOperationException($"Order {order.OrderNumber} has already been refunded once, so it can't be refunded again.");
 
         if (order.OrderStatus != "Completed" && order.PaymentStatus != "Paid")
             throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus} (Payment: {order.PaymentStatus}). Only Paid or Completed orders can be refunded.");
@@ -823,6 +891,9 @@ public class OrderManagementService : IOrderManagementService
                 ? "Attach proof that the item wasn't delivered (e.g. Lalamove's failed-delivery screen)."
                 : "Attach a photo as proof for refunds on paid institutional orders.");
 
+        // Which items come back, and how many. A failed delivery always returns everything.
+        var lines = await ResolveRefundLinesAsync(order, isFailedDelivery ? null : items);
+
         if (image != null)
         {
             // A new request after a rejection replaces the earlier photo.
@@ -838,16 +909,120 @@ public class OrderManagementService : IOrderManagementService
             }
         }
 
+        var now = DateTime.UtcNow;
+        var trimmedReason = reason.Trim();
+        var requestedBy = await _staff.CurrentStaffIdAsync() ?? 0;
+        foreach (var line in lines)
+        {
+            await _db.RefundRequests.AddAsync(new RefundRequest
+            {
+                OrderId = order.OrderId,
+                VariationId = line.VariationId,
+                LocationId = order.LocationId ?? 0,
+                QuantityToReturn = line.Quantity,
+                Reason = trimmedReason,
+                Status = "Pending",
+                RequestedBy = requestedBy,
+                CreatedAt = now,
+                UpdatedAt = now,
+            });
+        }
+
         var currentStatus = order.OrderStatus;
         order.OrderStatus = "Refund Requested";
-        order.RejectionRemarks = reason; // Store reason here as agreed
-        order.UpdatedAt = DateTime.UtcNow;
+        order.RejectionRemarks = trimmedReason; // Store reason here as agreed
+        order.UpdatedAt = now;
 
-        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Refund Requested", 1, reason);
+        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Refund Requested", 1,
+            $"{trimmedReason} ({DescribeRefundLines(order, lines)})");
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
 
         return MapToResponse(order);
+    }
+
+    private sealed record RefundLine(int VariationId, int Quantity);
+
+    // Units of each variation in the order that are already refunded or waiting for approval.
+    private async Task<Dictionary<int, (int Approved, int Pending)>> LoadRefundQuantitiesAsync(int orderId)
+    {
+        var rows = await _db.RefundRequests
+            .AsNoTracking()
+            .Where(r => r.OrderId == orderId && (r.Status == "Approved" || r.Status == "Pending"))
+            .GroupBy(r => r.VariationId)
+            .Select(g => new
+            {
+                VariationId = g.Key,
+                Approved = g.Sum(r => r.Status == "Approved" ? r.QuantityToReturn : 0),
+                Pending = g.Sum(r => r.Status == "Pending" ? r.QuantityToReturn : 0),
+            })
+            .ToListAsync();
+        return rows.ToDictionary(r => r.VariationId, r => (r.Approved, r.Pending));
+    }
+
+    // Checks the requested items against what was bought and what's already refunded.
+    // No items means "everything not refunded yet".
+    private async Task<List<RefundLine>> ResolveRefundLinesAsync(Order order, IReadOnlyList<RefundItemDto>? items)
+    {
+        var purchased = order.OrderItems
+            .GroupBy(i => i.VariationId)
+            .ToDictionary(g => g.Key, g => g.Sum(i => i.Quantity));
+        var already = await LoadRefundQuantitiesAsync(order.OrderId);
+        int Remaining(int variationId) =>
+            purchased.GetValueOrDefault(variationId)
+            - (already.TryGetValue(variationId, out var q) ? q.Approved + q.Pending : 0);
+
+        List<RefundLine> lines;
+        if (items == null || items.Count == 0)
+        {
+            lines = purchased.Keys
+                .Select(v => new RefundLine(v, Remaining(v)))
+                .Where(l => l.Quantity > 0)
+                .ToList();
+        }
+        else
+        {
+            lines = items
+                .GroupBy(i => i.VariationId)
+                .Select(g => new RefundLine(g.Key, g.Sum(i => i.Quantity)))
+                .ToList();
+            foreach (var line in lines)
+            {
+                if (!purchased.ContainsKey(line.VariationId))
+                    throw new InvalidOperationException($"That item isn't part of order {order.OrderNumber}.");
+                if (line.Quantity <= 0)
+                    throw new InvalidOperationException("Each item being refunded needs a quantity of at least 1.");
+                var left = Remaining(line.VariationId);
+                if (line.Quantity > left)
+                    throw new InvalidOperationException(left <= 0
+                        ? $"{ItemLabel(order, line.VariationId)} has already been refunded."
+                        : $"Only {left} of {ItemLabel(order, line.VariationId)} can still be refunded.");
+            }
+        }
+
+        if (lines.Count == 0)
+            throw new InvalidOperationException($"Everything in order {order.OrderNumber} has already been refunded.");
+        return lines;
+    }
+
+    private static string ItemLabel(Order order, int variationId)
+    {
+        var item = order.OrderItems.FirstOrDefault(i => i.VariationId == variationId);
+        var product = item?.ProductVariation?.Product?.ProductName;
+        var variation = item?.ProductVariation?.VariationName;
+        return product == null ? "this item" : string.IsNullOrWhiteSpace(variation) ? product : $"{product} ({variation})";
+    }
+
+    private static decimal UnitPriceOf(Order order, int variationId) =>
+        order.OrderItems.FirstOrDefault(i => i.VariationId == variationId)?.UnitPrice ?? 0m;
+
+    // e.g. "2 × Ube Halaya (Large), 1 × Strawberry Jam; ₱540.00"
+    private static string DescribeRefundLines(Order order, IEnumerable<RefundLine> lines)
+    {
+        var list = lines.ToList();
+        var amount = list.Sum(l => UnitPriceOf(order, l.VariationId) * l.Quantity);
+        var items = string.Join(", ", list.Select(l => $"{l.Quantity} × {ItemLabel(order, l.VariationId)}"));
+        return $"{items}; ₱{amount:N2}";
     }
 
     public async Task<OrderManagementResponseDto?> ApproveRefundAsync(int orderId, int approvedBy, string? pinCode)
@@ -886,70 +1061,118 @@ public class OrderManagementService : IOrderManagementService
             throw new InvalidOperationException("Unable to identify manager to validate PIN.");
         }
 
-        var currentStatus = order.OrderStatus;
-        order.OrderStatus = "Refunded";
-        order.ApprovedBy = approvedBy;
-        order.ApprovedAt = DateTime.UtcNow;
-        order.UpdatedAt = DateTime.UtcNow;
+        var now = DateTime.UtcNow;
+        var already = await LoadRefundQuantitiesAsync(orderId);
+        var pending = await _db.RefundRequests
+            .Where(r => r.OrderId == orderId && r.Status == "Pending")
+            .ToListAsync();
 
-        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Refunded", approvedBy, "Refund approved");
-        _db.Orders.Update(order);
+        // Four eyes: whoever asked for the refund can't approve it. Requests from before
+        // requesters were recorded (0 / 1) never match a staff number, so they're unaffected.
+        var approverId = await _staff.CurrentStaffIdAsync();
+        if (approverId.HasValue && pending.Any(r => r.RequestedBy == approverId.Value))
+            throw new InvalidOperationException("You requested this refund, so a different manager has to approve it.");
 
-        var refundRequests = await _db.RefundRequests.Where(r => r.OrderId == orderId).ToListAsync();
-        foreach (var req in refundRequests)
+        // Requests filed before item refunds existed have no item rows: refund what's left.
+        if (pending.Count == 0)
+        {
+            foreach (var group in order.OrderItems.GroupBy(i => i.VariationId))
+            {
+                var left = group.Sum(i => i.Quantity) - (already.TryGetValue(group.Key, out var q) ? q.Approved : 0);
+                if (left <= 0) continue;
+                var row = new RefundRequest
+                {
+                    OrderId = order.OrderId,
+                    VariationId = group.Key,
+                    LocationId = order.LocationId ?? 0,
+                    QuantityToReturn = left,
+                    Reason = order.RejectionRemarks ?? "Refund",
+                    Status = "Pending",
+                    RequestedBy = 0, // filed before requesters were recorded
+                    CreatedAt = now,
+                    UpdatedAt = now,
+                };
+                await _db.RefundRequests.AddAsync(row);
+                pending.Add(row);
+            }
+        }
+
+        foreach (var req in pending)
         {
             req.Status = "Approved";
-            req.ApprovedBy = approvedBy;
-            req.ApprovedAt = DateTime.UtcNow;
-            req.UpdatedAt = DateTime.UtcNow;
-            _db.RefundRequests.Update(req);
+            req.ApprovedBy = await _staff.CurrentStaffIdAsync() ?? approvedBy;
+            req.ApprovedAt = now;
+            req.UpdatedAt = now;
         }
+
+        // The order is Refunded only once every unit has come back. Otherwise it returns to
+        // the status it had before the request, with the refunded units recorded per item.
+        var refundedAfter = order.OrderItems
+            .GroupBy(i => i.VariationId)
+            .ToDictionary(
+                g => g.Key,
+                g => (Bought: g.Sum(i => i.Quantity),
+                      Refunded: (already.TryGetValue(g.Key, out var q) ? q.Approved : 0)
+                          + pending.Where(r => r.VariationId == g.Key).Sum(r => r.QuantityToReturn)));
+        var fullyRefunded = refundedAfter.Values.All(v => v.Refunded >= v.Bought);
+        var summary = DescribeRefundLines(order, pending.Select(r => new RefundLine(r.VariationId, r.QuantityToReturn)));
+
+        var currentStatus = order.OrderStatus;
+        if (fullyRefunded)
+        {
+            order.OrderStatus = "Refunded";
+            order.ApprovedBy = await _staff.CurrentStaffIdAsync() ?? approvedBy;
+            order.ApprovedAt = now;
+            await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Refunded", approvedBy, $"Refund approved ({summary})");
+        }
+        else
+        {
+            var previousStatus = await PreviousStatusBeforeRefundRequestAsync(orderId);
+            order.OrderStatus = previousStatus;
+            await RecordStatusHistoryAsync(order.OrderId, currentStatus, previousStatus, approvedBy, $"Partial refund approved ({summary})");
+        }
+        order.UpdatedAt = now;
+        _db.Orders.Update(order);
 
         await _db.SaveChangesAsync();
 
-        // POS-017: Auto restore stock per item. Unsellable goods (in-store "Damaged/Expired
+        // POS-017: Auto restore stock per refunded item. Unsellable goods (in-store "Damaged/Expired
         // (Unsellable)", institutional "Damaged (Unsellable)") were refunded but can't be
         // resold, so they stay out of stock. Institutional "Item not delivered" is restocked
         // because the courier returns the goods.
-        var isUnsellable = order.RejectionRemarks != null &&
-            (order.RejectionRemarks.Contains("(Unsellable)", StringComparison.OrdinalIgnoreCase) ||
-             order.RejectionRemarks.StartsWith("Damaged/Expired", StringComparison.OrdinalIgnoreCase));
-        if (order.LocationId.HasValue && !isUnsellable)
+        if (order.LocationId.HasValue)
         {
-            foreach (var item in order.OrderItems)
+            foreach (var req in pending)
             {
+                var isUnsellable =
+                    req.Reason.Contains("(Unsellable)", StringComparison.OrdinalIgnoreCase) ||
+                    req.Reason.StartsWith("Damaged/Expired", StringComparison.OrdinalIgnoreCase);
                 try
                 {
-                    await _inventoryService.RestoreStockAsync(item.VariationId, order.LocationId.Value, item.Quantity, order.OrderId, "Refund", order.OrderNumber);
-                }
-                catch (InvalidOperationException)
-                {
-                    // Stock may not be tracked for this item/location
-                }
-            }
-        }
-        else if (order.LocationId.HasValue && isUnsellable)
-        {
-            foreach (var item in order.OrderItems)
-            {
-                try
-                {
-                    await _inventoryService.RecordStockLossAsync(
-                        item.VariationId,
-                        order.LocationId.Value,
-                        item.Quantity,
-                        order.OrderId,
-                        order.OrderNumber,
-                        order.RejectionRemarks);
+                    if (isUnsellable)
+                        await _inventoryService.RecordStockLossAsync(req.VariationId, order.LocationId.Value, req.QuantityToReturn, order.OrderId, order.OrderNumber, req.Reason);
+                    else
+                        await _inventoryService.RestoreStockAsync(req.VariationId, order.LocationId.Value, req.QuantityToReturn, order.OrderId, "Refund", order.OrderNumber);
                 }
                 catch (InvalidOperationException ex)
                 {
-                    System.Console.WriteLine($"ApproveRefundAsync: Stock loss logging skipped for VariationId {item.VariationId} at Location {order.LocationId.Value}: {ex.Message}");
+                    // Stock may not be tracked for this item/location.
+                    System.Console.WriteLine($"ApproveRefundAsync: stock update skipped for VariationId {req.VariationId} at Location {order.LocationId.Value}: {ex.Message}");
                 }
             }
         }
 
         return MapToResponse(order);
+    }
+
+    // The status an order had before its latest refund request (usually Completed; Shipped for a failed delivery).
+    private async Task<string> PreviousStatusBeforeRefundRequestAsync(int orderId)
+    {
+        var record = await _db.OrderStatusHistories
+            .Where(h => h.OrderId == orderId && h.NewStatus == "Refund Requested")
+            .OrderByDescending(h => h.CreatedAt)
+            .FirstOrDefaultAsync();
+        return record?.OldStatus ?? "Completed";
     }
 
     public async Task<OrderManagementResponseDto?> RejectRefundAsync(int orderId, int rejectedBy, string reason, string? pinCode)
@@ -990,27 +1213,23 @@ public class OrderManagementService : IOrderManagementService
         // Revert to the status before the request (usually Completed; Shipped for a
         // rejected failed-delivery refund, so it can still be confirmed as delivered).
         var currentStatus = order.OrderStatus;
-        var previousStatusRecord = await _db.OrderStatusHistories
-            .Where(h => h.OrderId == orderId && h.NewStatus == "Refund Requested")
-            .OrderByDescending(h => h.CreatedAt)
-            .FirstOrDefaultAsync();
-        var revertStatus = previousStatusRecord?.OldStatus ?? "Completed";
+        var revertStatus = await PreviousStatusBeforeRefundRequestAsync(orderId);
 
         order.OrderStatus = revertStatus;
-        order.ApprovedBy = rejectedBy; // Log manager id
+        order.ApprovedBy = await _staff.CurrentStaffIdAsync() ?? rejectedBy; // Log manager id
         order.RejectionRemarks = $"Refund Rejected: {reason}";
         order.UpdatedAt = DateTime.UtcNow;
 
         await RecordStatusHistoryAsync(order.OrderId, currentStatus, revertStatus, rejectedBy, $"Refund rejected: {reason}");
         _db.Orders.Update(order);
 
-        var refundRequests = await _db.RefundRequests.Where(r => r.OrderId == orderId).ToListAsync();
+        // Only the request being rejected; earlier approved refunds on this order stay approved.
+        var refundRequests = await _db.RefundRequests.Where(r => r.OrderId == orderId && r.Status == "Pending").ToListAsync();
         foreach (var req in refundRequests)
         {
             req.Status = "Rejected";
-            req.ApprovedBy = rejectedBy; 
+            req.ApprovedBy = await _staff.CurrentStaffIdAsync() ?? rejectedBy;
             req.UpdatedAt = DateTime.UtcNow;
-            _db.RefundRequests.Update(req);
         }
 
         await _db.SaveChangesAsync();
@@ -1041,6 +1260,9 @@ public class OrderManagementService : IOrderManagementService
 
         if (order.OrderStatus == "Void Requested" || order.OrderStatus == "Voided" || order.OrderStatus == "Cancelled" || order.OrderStatus == "Refund Requested" || order.OrderStatus == "Refunded")
             throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Cannot request void.");
+
+        if (await _db.RefundRequests.AnyAsync(r => r.OrderId == order.OrderId && r.Status == "Approved"))
+            throw new InvalidOperationException($"Part of order {order.OrderNumber} has already been refunded, so it can't be voided. Request a refund for the remaining items instead.");
 
         var currentStatus = order.OrderStatus;
         order.OrderStatus = "Void Requested";
@@ -1090,9 +1312,22 @@ public class OrderManagementService : IOrderManagementService
             throw new InvalidOperationException("Unable to identify manager to validate PIN.");
         }
 
+        // Four eyes: whoever asked for the void can't approve it.
+        var voidApproverId = await _staff.CurrentStaffIdAsync();
+        if (voidApproverId.HasValue)
+        {
+            var voidRequestedBy = await _db.OrderStatusHistories
+                .Where(h => h.OrderId == orderId && h.NewStatus == "Void Requested")
+                .OrderByDescending(h => h.CreatedAt)
+                .Select(h => h.ChangedBy)
+                .FirstOrDefaultAsync();
+            if (voidRequestedBy == voidApproverId)
+                throw new InvalidOperationException("You requested this void, so a different manager has to approve it.");
+        }
+
         var currentStatus = order.OrderStatus;
         order.OrderStatus = "Voided";
-        order.ApprovedBy = approvedBy;
+        order.ApprovedBy = await _staff.CurrentStaffIdAsync() ?? approvedBy;
         order.ApprovedAt = DateTime.UtcNow;
         order.UpdatedAt = DateTime.UtcNow;
 
@@ -1160,7 +1395,7 @@ public class OrderManagementService : IOrderManagementService
         string revertStatus = previousStatusRecord?.OldStatus ?? "Completed";
         
         order.OrderStatus = revertStatus;
-        order.ApprovedBy = rejectedBy; 
+        order.ApprovedBy = await _staff.CurrentStaffIdAsync() ?? rejectedBy; 
         order.RejectionRemarks = $"Void Rejected: {reason}";
         order.UpdatedAt = DateTime.UtcNow;
 
@@ -1178,7 +1413,7 @@ public class OrderManagementService : IOrderManagementService
             OrderId = orderId,
             OldStatus = oldStatus,
             NewStatus = newStatus,
-            ChangedBy = changedBy,
+            ChangedBy = await _staff.CurrentStaffIdAsync() ?? changedBy,
             Remarks = remarks,
             CreatedAt = DateTime.UtcNow
         };

@@ -59,6 +59,7 @@ builder.Services.AddHttpClient("EnterprisePortal", client =>
 });
 
 // Sprint 2
+builder.Services.AddScoped<IPosStaffIdentity, PosStaffIdentity>();
 builder.Services.AddScoped<IOrderManagementService, OrderManagementService>();
 builder.Services.AddScoped<IInventoryService, InventoryService>();
 builder.Services.AddScoped<IAnalyticsService, AnalyticsService>();

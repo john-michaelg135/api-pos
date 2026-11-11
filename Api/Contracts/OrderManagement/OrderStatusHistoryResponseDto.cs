@@ -9,6 +9,8 @@ public class OrderStatusHistoryResponseDto
     public string OldStatus { get; set; } = string.Empty;
     public string NewStatus { get; set; } = string.Empty;
     public int? ChangedBy { get; set; }
+    // Display name for ChangedBy, when it's a recorded staff user.
+    public string? ChangedByName { get; set; }
     public string? Remarks { get; set; }
     public DateTime CreatedAt { get; set; }
 }
