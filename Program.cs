@@ -65,6 +65,18 @@ builder.Services.AddScoped<IAnalyticsService, AnalyticsService>();
 builder.Services.AddScoped<IDashboardService, DashboardService>(); // Owner dashboard
 builder.Services.AddMemoryCache(); // Short-lived owner dashboard cache
 
+// Gzip/Brotli for JSON responses. "Fastest" keeps the CPU cost low; JSON still shrinks a lot.
+// Compression applies to plain-HTTP traffic (the default), i.e. behind a TLS-terminating host proxy.
+builder.Services.AddResponseCompression(options =>
+{
+    options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProvider>();
+    options.Providers.Add<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProvider>();
+});
+builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProviderOptions>(
+    options => options.Level = System.IO.Compression.CompressionLevel.Fastest);
+builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProviderOptions>(
+    options => options.Level = System.IO.Compression.CompressionLevel.Fastest);
+
 // Sprint 3
 builder.Services.AddScoped<IRefundService, RefundService>();
 builder.Services.AddScoped<IStockAdjustmentService, StockAdjustmentService>();
@@ -264,6 +276,8 @@ if (app.Environment.IsDevelopment())
 }
 
 // app.UseHttpsRedirection();
+
+app.UseResponseCompression();
 
 // ── Global error surfacing ──
 // Production hides exception detail by default, which turns real DB/schema

@@ -73,12 +73,15 @@ public class DashboardService : IDashboardService
         var previousMoney = money.Where(e => e.At >= previousStart && e.At < previousEnd).ToList();
 
         // Orders that count as a sale: paid in full or with a downpayment, not voided/cancelled.
-        var orders = await _db.Orders
+        var saleOrders = _db.Orders
             .AsNoTracking()
-            .Where(o => o.CreatedAt >= previousStart && o.CreatedAt < currentEnd)
             .Where(o => !ExcludedOrderStatuses.Contains(o.OrderStatus))
             .Where(o => o.PaymentStatus == "Paid" || o.PaymentStatus == "Partial" || o.OrderStatus == "Completed")
-            .Where(o => !locationId.HasValue || o.LocationId == locationId)
+            .Where(o => !locationId.HasValue || o.LocationId == locationId);
+
+        // This period needs every order and its items (branches, channels, best sellers)...
+        var currentOrders = await saleOrders
+            .Where(o => o.CreatedAt >= currentStart && o.CreatedAt < currentEnd)
             .Select(o => new
             {
                 o.OrderId,
@@ -98,8 +101,17 @@ public class DashboardService : IDashboardService
             })
             .ToListAsync(cancellationToken);
 
-        var currentOrders = orders.Where(o => o.CreatedAt >= currentStart && o.CreatedAt < currentEnd).ToList();
-        var previousOrders = orders.Where(o => o.CreatedAt >= previousStart && o.CreatedAt < previousEnd).ToList();
+        // ...the comparison period only needs totals, so the database adds them up.
+        var previousOrders = saleOrders.Where(o => o.CreatedAt >= previousStart && o.CreatedAt < previousEnd);
+        var previousTotals = await previousOrders
+            .GroupBy(o => 1)
+            .Select(g => new { Count = g.Count(), Amount = g.Sum(o => o.TotalAmount) })
+            .FirstOrDefaultAsync(cancellationToken);
+        var previousCount = previousTotals?.Count ?? 0;
+        var previousItemsSold = await _db.OrderItems
+            .AsNoTracking()
+            .Where(i => previousOrders.Any(o => o.OrderId == i.OrderId))
+            .SumAsync(i => (int?)i.Quantity, cancellationToken) ?? 0;
 
         var locations = await _db.Locations
             .AsNoTracking()
@@ -125,16 +137,16 @@ public class DashboardService : IDashboardService
                 Current = currentMoney.Sum(e => e.Amount),
                 Previous = previousMoney.Sum(e => e.Amount),
             },
-            Orders = new DashboardKpiDto { Current = currentOrders.Count, Previous = previousOrders.Count },
+            Orders = new DashboardKpiDto { Current = currentOrders.Count, Previous = previousCount },
             AverageSale = new DashboardKpiDto
             {
                 Current = currentOrders.Count == 0 ? 0 : Math.Round(currentOrders.Average(o => o.TotalAmount), 2),
-                Previous = previousOrders.Count == 0 ? 0 : Math.Round(previousOrders.Average(o => o.TotalAmount), 2),
+                Previous = previousCount == 0 ? 0 : Math.Round(previousTotals!.Amount / previousCount, 2),
             },
             ItemsSold = new DashboardKpiDto
             {
                 Current = currentOrders.Sum(o => o.Items.Sum(i => i.Quantity)),
-                Previous = previousOrders.Sum(o => o.Items.Sum(i => i.Quantity)),
+                Previous = previousItemsSold,
             },
         };
 
@@ -241,16 +253,8 @@ public class DashboardService : IDashboardService
             })
             .ToListAsync(cancellationToken);
 
-        // Older orders marked Paid before payment rows were recorded.
-        var paidWithoutPayments = await _db.Orders
-            .AsNoTracking()
-            .Where(o => o.PaymentStatus == "Paid"
-                && o.CreatedAt >= start && o.CreatedAt < end
-                && !ExcludedOrderStatuses.Contains(o.OrderStatus)
-                && (!locationId.HasValue || o.LocationId == locationId)
-                && !_db.Payments.Any(p => p.OrderId == o.OrderId && (p.PaymentStatus == "Success" || p.PaymentStatus == "Paid")))
-            .Select(o => new { o.CreatedAt, o.TotalAmount, o.LocationId, o.OrderSource, o.OrderType })
-            .ToListAsync(cancellationToken);
+        // Older Paid orders without a payment row were given one by the
+        // BackfillLegacyPaidOrderPayments migration, so payments alone cover every sale.
 
         var itemRefunds = await (
             from refund in _db.RefundRequests.AsNoTracking()
@@ -282,7 +286,6 @@ public class DashboardService : IDashboardService
             .ToListAsync(cancellationToken);
 
         return payments.Select(p => new MoneyEvent(p.PaidAt, p.AmountPaid, p.LocationId, ChannelOf(p.OrderSource, p.OrderType)))
-            .Concat(paidWithoutPayments.Select(o => new MoneyEvent(o.CreatedAt, o.TotalAmount, o.LocationId, ChannelOf(o.OrderSource, o.OrderType))))
             .Concat(itemRefunds.Select(r => new MoneyEvent(r.At, -r.Amount, r.LocationId, ChannelOf(r.OrderSource, r.OrderType))))
             .Concat(wholeOrderRefunds.Select(o => new MoneyEvent(o.At, -o.TotalAmount, o.LocationId, ChannelOf(o.OrderSource, o.OrderType))))
             .ToList();
