@@ -19,6 +19,10 @@ public class RefundRequest
     // Reason for the refund
     public string Reason { get; set; } = string.Empty;
 
+    // How the money goes back: "Cash" (from the drawer) or "GCash". Always the way the order
+    // was paid (see RefundMethods), set when the request is filed.
+    public string? RefundMethod { get; set; }
+
     // US-POS-016: Always "Pending" on creation — manager must review
     public string Status { get; set; } = "Pending";
 

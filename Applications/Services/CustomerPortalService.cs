@@ -173,6 +173,7 @@ public class CustomerPortalService : ICustomerPortalService
                 VariationId = item.VariationId,
                 LocationId = order.LocationId ?? 1, // Fallback if no location
                 QuantityToReturn = item.Quantity,
+                RefundMethod = Applications.Services.RefundMethods.For(order.PaymentMethod),
                 Reason = reason,
                 Status = "Pending",
                 RequestedBy = 0, // The customer (see the order); 0 keeps it apart from staff numbers

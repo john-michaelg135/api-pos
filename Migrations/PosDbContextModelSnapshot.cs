@@ -733,6 +733,10 @@ namespace api_pos.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("RefundMethod")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
                     b.Property<int>("RequestedBy")
                         .HasColumnType("integer");
 

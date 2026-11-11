@@ -526,6 +526,21 @@ public class OrderManagementService : IOrderManagementService
             if (history.ChangedBy.HasValue && names.TryGetValue(history.ChangedBy.Value, out var name))
                 history.ChangedByName = name;
 
+        // Flag requests the viewer filed, so the screen can disable Approve (the approve
+        // endpoints refuse them anyway). The requester is whoever moved the order into the
+        // requested status, the same person the refund rows record.
+        var awaiting = orders.Where(o => o.OrderStatus is "Refund Requested" or "Void Requested").ToList();
+        if (awaiting.Count > 0 && await _staff.CurrentStaffIdAsync() is int viewerId)
+        {
+            foreach (var order in awaiting)
+            {
+                var request = order.StatusHistory
+                    .Where(h => h.NewStatus == order.OrderStatus)
+                    .MaxBy(h => h.CreatedAt);
+                order.RequestedByCurrentUser = request?.ChangedBy == viewerId;
+            }
+        }
+
         var confirmations = await _db.OrderDeliveryConfirmations
             .AsNoTracking()
             .Where(c => orderIds.Contains(c.OrderId))
@@ -550,6 +565,14 @@ public class OrderManagementService : IOrderManagementService
         {
             if (confirmations.TryGetValue(order.OrderId, out var confirmation))
                 order.DeliveryConfirmation = confirmation;
+
+            // Same rule the refund request enforces, so the screen can show it.
+            var deadline = RefundPolicy.DeadlineUtc(order.OrderType, RefundPolicy.WindowStartUtc(
+                order.OrderType,
+                order.CreatedAt,
+                order.StatusHistory.Select(h => (h.NewStatus, h.CreatedAt)),
+                order.DeliveryConfirmation?.DeliveredAt));
+            order.RefundDeadline = deadline;
         }
     }
 
@@ -891,6 +914,23 @@ public class OrderManagementService : IOrderManagementService
                 ? "Attach proof that the item wasn't delivered (e.g. Lalamove's failed-delivery screen)."
                 : "Attach a photo as proof for refunds on paid institutional orders.");
 
+        // Refund window (RefundPolicy): food can only be returned shortly after the sale or delivery.
+        // A failed delivery never reached the customer, so it has no window.
+        if (!isFailedDelivery)
+        {
+            var deliveredAt = await _db.OrderDeliveryConfirmations
+                .Where(c => c.OrderId == order.OrderId)
+                .Select(c => (DateTime?)c.DeliveredAt)
+                .FirstOrDefaultAsync();
+            var deadline = RefundPolicy.DeadlineUtc(order.OrderType, RefundPolicy.WindowStartUtc(
+                order.OrderType,
+                order.CreatedAt,
+                order.StatusHistory.Select(h => (h.NewStatus, h.CreatedAt)),
+                deliveredAt));
+            if (deadline.HasValue && DateTime.UtcNow >= deadline.Value)
+                throw new InvalidOperationException($"The refund window for order {order.OrderNumber} ended on {RefundPolicy.Describe(deadline.Value)}.");
+        }
+
         // Which items come back, and how many. A failed delivery always returns everything.
         var lines = await ResolveRefundLinesAsync(order, isFailedDelivery ? null : items);
 
@@ -921,6 +961,7 @@ public class OrderManagementService : IOrderManagementService
                 LocationId = order.LocationId ?? 0,
                 QuantityToReturn = line.Quantity,
                 Reason = trimmedReason,
+                RefundMethod = RefundMethods.For(order.PaymentMethod),
                 Status = "Pending",
                 RequestedBy = requestedBy,
                 CreatedAt = now,
@@ -1087,6 +1128,7 @@ public class OrderManagementService : IOrderManagementService
                     LocationId = order.LocationId ?? 0,
                     QuantityToReturn = left,
                     Reason = order.RejectionRemarks ?? "Refund",
+                    RefundMethod = RefundMethods.For(order.PaymentMethod),
                     Status = "Pending",
                     RequestedBy = 0, // filed before requesters were recorded
                     CreatedAt = now,
@@ -1445,6 +1487,7 @@ public class OrderManagementService : IOrderManagementService
             OrderStatus           = order.OrderStatus,
             PaymentMethod         = order.PaymentMethod,
             PaymentStatus         = order.PaymentStatus,
+            RefundMethod          = RefundMethods.For(order.PaymentMethod),
             TotalAmount           = order.TotalAmount,
             AmountTendered        = order.AmountTendered,
             ChangeAmount          = order.ChangeAmount,

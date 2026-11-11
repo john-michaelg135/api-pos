@@ -237,6 +237,7 @@ public class PosDbContext : DbContext
         // ── RefundRequest (Sprint 3 — US-POS-016/017) ──
         modelBuilder.Entity<RefundRequest>(entity =>
         {
+            entity.Property(e => e.RefundMethod).HasMaxLength(20);
             entity.HasKey(e => e.RefundRequestId);
             entity.Property(e => e.RefundRequestId).UseIdentityByDefaultColumn();
             entity.Property(e => e.Reason).IsRequired().HasColumnType("text");

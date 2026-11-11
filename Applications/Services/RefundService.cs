@@ -63,6 +63,7 @@ public class RefundService : IRefundService
             LocationId      = dto.LocationId,
             QuantityToReturn = dto.QuantityToReturn,
             Reason          = dto.Reason,
+            RefundMethod    = RefundMethods.For(order.PaymentMethod),
             Status          = "Pending",
             RequestedBy     = dto.RequestedBy,
             CreatedAt       = now,

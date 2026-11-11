@@ -107,9 +107,17 @@ public class OrderEntryService : IOrderEntryService
     // POS-006: Order creation (with price snapshot — POS-004)
     // ────────────────────────────────────────────────────
 
+    // Store and institutional sales are paid in full by Cash or GCash (COD is no longer
+    // offered; older COD orders stay as they are). Also fixes the casing for reports.
+    private static string RequireCashOrGcash(string? paymentMethod) =>
+        string.Equals(paymentMethod?.Trim(), "Cash", StringComparison.OrdinalIgnoreCase) ? "Cash"
+        : string.Equals(paymentMethod?.Trim(), "GCash", StringComparison.OrdinalIgnoreCase) ? "GCash"
+        : throw new InvalidOperationException("Payment must be Cash or GCash.");
+
     public async Task<OrderResponseDto> CreateOrderAsync(CreateOrderDto dto)
     {
         var now = DateTime.UtcNow;
+        dto.PaymentMethod = RequireCashOrGcash(dto.PaymentMethod);
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         if (currentUser != null && !PosRoleAuthorization.IsAdministrator(currentUser))
         {
@@ -445,6 +453,7 @@ public class OrderEntryService : IOrderEntryService
     public async Task<OrderResponseDto> CreateInstitutionalOrderAsync(CreateInstitutionalOrderDto dto)
     {
         var now = DateTime.UtcNow;
+        dto.PaymentMethod = RequireCashOrGcash(dto.PaymentMethod);
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
         if (currentUser?.SubRole == "Cashier")
         {

@@ -55,4 +55,13 @@ public class OrderManagementResponseDto
     // Value of the items already refunded, and of the items in a refund request awaiting approval.
     public decimal RefundedAmount { get; set; }
     public decimal PendingRefundAmount { get; set; }
+
+    // The signed-in user filed the waiting refund or void request, so they can't approve it.
+    public bool RequestedByCurrentUser { get; set; }
+
+    // How a refund of this order is paid out: "Cash" (from the drawer) or "GCash", the way it was paid.
+    public string RefundMethod { get; set; } = "Cash";
+
+    // When the refund window closes (UTC, exclusive), from RefundPolicy. Null before delivery.
+    public DateTime? RefundDeadline { get; set; }
 }
