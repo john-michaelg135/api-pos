@@ -21,14 +21,18 @@ public class OrderEntryService : IOrderEntryService
     private readonly IXenditService _xenditService;
     private readonly IAuditLogService _auditLogService;
 
+    private readonly IPosStaffIdentity _staff;
+
     public OrderEntryService(
         PosDbContext db,
         IInventoryService inventoryService,
         IHttpContextAccessor httpContextAccessor,
         IXenditService xenditService,
-        IAuditLogService auditLogService)
+        IAuditLogService auditLogService,
+        IPosStaffIdentity staff)
     {
         _db = db;
+        _staff = staff;
         _inventoryService = inventoryService;
         _httpContextAccessor = httpContextAccessor;
         _xenditService = xenditService;
@@ -157,7 +161,7 @@ public class OrderEntryService : IOrderEntryService
             OrderType = dto.OrderType,
             OrderSource = "POS",
             LocationId = dto.LocationId,
-            SubmittedBy = dto.SubmittedBy,
+            SubmittedBy = await _staff.CurrentStaffIdAsync() ?? dto.SubmittedBy,
             PaymentMethod = dto.PaymentMethod,
             PaymentStatus = "Paid",
             OrderStatus = "Completed",
@@ -182,8 +186,7 @@ public class OrderEntryService : IOrderEntryService
             SeniorPwdZipCode = dto.SeniorPwdZipCode
         };
 
-        await _db.Orders.AddAsync(order);
-        await _db.SaveChangesAsync();
+        await InsertOrderWithUniqueNumberAsync(order, now);
 
 
         // Create order items with price snapshots
@@ -336,6 +339,29 @@ public class OrderEntryService : IOrderEntryService
     // Private helpers
     // ────────────────────────────────────────────────────
 
+    // Two sales saved at the same instant (any branch) can pick the same next number; the unique
+    // index refuses the second. Only the order row is pending at this point, so on that clash
+    // take the next number and save again.
+    private async Task InsertOrderWithUniqueNumberAsync(Order order, DateTime now)
+    {
+        const int attempts = 5;
+        await _db.Orders.AddAsync(order);
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                await _db.SaveChangesAsync();
+                return;
+            }
+            catch (DbUpdateException ex) when (
+                attempt < attempts
+                && ex.InnerException is Npgsql.PostgresException { SqlState: "23505", ConstraintName: "IX_Orders_OrderNumber" })
+            {
+                order.OrderNumber = await GenerateOrderNumberAsync(now);
+            }
+        }
+    }
+
     private async Task<string> GenerateOrderNumberAsync(DateTime date)
     {
         var datePrefix = date.ToString("yyyyMMdd");
@@ -379,7 +405,7 @@ public class OrderEntryService : IOrderEntryService
         var now = DateTime.UtcNow;
         order.OrderStatus = "Completed";
         order.PaymentStatus = "Paid";
-        order.ApprovedBy = dto.SubmittedBy;
+        order.ApprovedBy = await _staff.CurrentStaffIdAsync() ?? dto.SubmittedBy;
         order.ApprovedAt = now;
         order.UpdatedAt = now;
 
@@ -391,7 +417,7 @@ public class OrderEntryService : IOrderEntryService
             OrderId = order.OrderId,
             OldStatus = oldStatus,
             NewStatus = "Completed",
-            ChangedBy = dto.SubmittedBy,
+            ChangedBy = await _staff.CurrentStaffIdAsync() ?? dto.SubmittedBy,
             Remarks = "Walk-in order confirmed",
             CreatedAt = now
         };
@@ -544,7 +570,7 @@ public class OrderEntryService : IOrderEntryService
             DeliveryAddress = dto.DeliveryAddress,
             ContactPerson = dto.ContactPerson,
             CustomVariationNotes = dto.CustomVariationNotes,
-            SubmittedBy = dto.SubmittedBy,
+            SubmittedBy = await _staff.CurrentStaffIdAsync() ?? dto.SubmittedBy,
             PaymentMethod = isGcash ? "GCash" : dto.PaymentMethod,
             PaymentStatus = isPartial ? "Partial" : (isCash || isGcash ? "Paid" : "Pending"),
             OrderStatus = isPartial || !(isCash || isGcash) ? "Processing" : "Paid",
@@ -555,8 +581,7 @@ public class OrderEntryService : IOrderEntryService
             UpdatedAt = now
         };
 
-        await _db.Orders.AddAsync(order);
-        await _db.SaveChangesAsync();
+        await InsertOrderWithUniqueNumberAsync(order, now);
 
         await _db.OrderItems.AddRangeAsync(pricedItems.Select(p => new OrderItem
         {
@@ -585,7 +610,7 @@ public class OrderEntryService : IOrderEntryService
             OrderId = order.OrderId,
             OldStatus = "New",
             NewStatus = order.OrderStatus,
-            ChangedBy = dto.SubmittedBy,
+            ChangedBy = await _staff.CurrentStaffIdAsync() ?? dto.SubmittedBy,
             Remarks = isPartial
                 ? $"50% GCash downpayment of ₱{amountPaidNow:N2} confirmed in wallet. Balance of ₱{totalAmount - amountPaidNow:N2} outstanding."
                 : isGcash

@@ -170,6 +170,10 @@ public class OrderManagementService : IOrderManagementService
     // POS-014: Unified order list with filters
     // ────────────────────────────────────────────────────
 
+    // Orders someone still has to act on; the order list always includes them, however old.
+    private static readonly string[] OpenOrderStatuses =
+        ["Pending", "Awaiting Stock", "Processing", "Paid", "Shipped", "Delivered", "Refund Requested", "Void Requested"];
+
     public async Task<List<OrderManagementResponseDto>> GetAllOrdersAsync(OrderFilterDto filter)
     {
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
@@ -209,7 +213,9 @@ public class OrderManagementService : IOrderManagementService
         if (filter.DateFrom.HasValue)
         {
             var from = DateTime.SpecifyKind(filter.DateFrom.Value, DateTimeKind.Utc);
-            query = query.Where(o => o.CreatedAt >= from);
+            query = filter.IncludeOpen
+                ? query.Where(o => o.CreatedAt >= from || OpenOrderStatuses.Contains(o.OrderStatus))
+                : query.Where(o => o.CreatedAt >= from);
         }
 
         if (filter.DateTo.HasValue)
@@ -615,7 +621,13 @@ public class OrderManagementService : IOrderManagementService
             return MapToResponse(order);
         }
 
-        var allowedStatuses = new[] { "Pending", "Awaiting Stock", "Processing", "Paid", "Shipped", "Delivered", "Completed", "Refund Requested", "Refunded", "Cancelled" };
+        // Refunds only go through the refund request/approve flow (manager PIN, refund records,
+        // refund window, no self-approval), never through a plain status change.
+        if (targetStatus.Equals("Refunded", StringComparison.OrdinalIgnoreCase) ||
+            targetStatus.Equals("Refund Requested", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"Use Request Refund for Order {order.OrderNumber}; refunds can't be set through a status change.");
+
+        var allowedStatuses = new[] { "Pending", "Awaiting Stock", "Processing", "Paid", "Shipped", "Delivered", "Completed", "Cancelled" };
         if (!allowedStatuses.Contains(targetStatus, System.StringComparer.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException($"Invalid target status '{targetStatus}'.");
@@ -707,6 +719,8 @@ public class OrderManagementService : IOrderManagementService
                 }
             }
         }
+        // No longer reachable: "Refunded" is refused above (refunds use ApproveRefundAsync).
+        // Kept so the old behaviour is visible if this is ever revisited.
         else if (string.Equals(targetStatus, "Refunded", StringComparison.OrdinalIgnoreCase))
         {
             if (order.LocationId.HasValue)

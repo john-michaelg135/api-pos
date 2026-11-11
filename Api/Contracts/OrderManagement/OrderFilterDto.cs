@@ -8,4 +8,8 @@ public class OrderFilterDto
     public int? LocationId { get; set; }
     public DateTime? DateFrom { get; set; }
     public DateTime? DateTo { get; set; }
+
+    // With DateFrom: also return older orders that still need action (pending, processing,
+    // paid, shipped, refund/void requested), so a date-limited list never hides open work.
+    public bool IncludeOpen { get; set; }
 }
