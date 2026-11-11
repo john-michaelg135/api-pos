@@ -63,6 +63,7 @@ builder.Services.AddScoped<IOrderManagementService, OrderManagementService>();
 builder.Services.AddScoped<IInventoryService, InventoryService>();
 builder.Services.AddScoped<IAnalyticsService, AnalyticsService>();
 builder.Services.AddScoped<IDashboardService, DashboardService>(); // Owner dashboard
+builder.Services.AddMemoryCache(); // Short-lived owner dashboard cache
 
 // Sprint 3
 builder.Services.AddScoped<IRefundService, RefundService>();

@@ -215,7 +215,6 @@ public class DashboardService : IDashboardService
             .Take(5)
             .ToList();
 
-        dto.Attention = await LoadAttentionAsync(locationId, cancellationToken);
         dto.BranchesToday = await LoadBranchesTodayAsync(today, branchNames, money, nowUtc, cancellationToken);
 
         return dto;
@@ -287,58 +286,6 @@ public class DashboardService : IDashboardService
             .Concat(itemRefunds.Select(r => new MoneyEvent(r.At, -r.Amount, r.LocationId, ChannelOf(r.OrderSource, r.OrderType))))
             .Concat(wholeOrderRefunds.Select(o => new MoneyEvent(o.At, -o.TotalAmount, o.LocationId, ChannelOf(o.OrderSource, o.OrderType))))
             .ToList();
-    }
-
-    private async Task<DashboardAttentionDto> LoadAttentionAsync(int? locationId, CancellationToken cancellationToken)
-    {
-        var orders = _db.Orders.AsNoTracking().Where(o => !locationId.HasValue || o.LocationId == locationId);
-
-        var partials = await orders
-            .Where(o => o.PaymentStatus == "Partial" && !ExcludedOrderStatuses.Contains(o.OrderStatus))
-            .Select(o => new
-            {
-                o.TotalAmount,
-                Paid = o.Payments.Where(p => p.PaymentStatus == "Success").Sum(p => (decimal?)p.AmountPaid) ?? 0,
-            })
-            .ToListAsync(cancellationToken);
-
-        var refundRequestOrders = await orders.CountAsync(o => o.OrderStatus == "Refund Requested", cancellationToken);
-        var pendingItemRefunds = await _db.RefundRequests
-            .AsNoTracking()
-            .Where(r => r.Status == "Pending" && (!locationId.HasValue || r.LocationId == locationId))
-            .Where(r => !_db.Orders.Any(o => o.OrderId == r.OrderId && o.OrderStatus == "Refund Requested"))
-            .Select(r => r.OrderId)
-            .Distinct()
-            .CountAsync(cancellationToken);
-
-        var lowStock = await _db.Stocks
-            .AsNoTracking()
-            .Where(s => s.MinThreshold > 0 && s.Quantity < s.MinThreshold)
-            .Where(s => !locationId.HasValue || s.LocationId == locationId)
-            .Where(s => s.Location != null && s.Location.IsActive)
-            .OrderBy(s => (double)s.Quantity / s.MinThreshold)
-            .ThenBy(s => s.Quantity)
-            .Select(s => new DashboardLowStockItemDto
-            {
-                ProductName = s.Variation != null && s.Variation.Product != null ? s.Variation.Product.ProductName : "",
-                VariationName = s.Variation != null ? s.Variation.VariationName : "",
-                BranchName = s.Location != null ? s.Location.LocationName : "",
-                Quantity = s.Quantity,
-                ReorderLevel = s.MinThreshold,
-            })
-            .ToListAsync(cancellationToken);
-
-        return new DashboardAttentionDto
-        {
-            UnpaidBalanceAmount = partials.Sum(o => Math.Max(0, o.TotalAmount - o.Paid)),
-            UnpaidBalanceOrders = partials.Count,
-            ReadyToShip = await orders.CountAsync(o => o.OrderStatus == "Paid", cancellationToken),
-            OnlineOrdersToApprove = await orders.CountAsync(o => o.OrderSource == "Ecommerce" && (o.OrderStatus == "Pending" || o.OrderStatus == "Awaiting Stock"), cancellationToken),
-            RefundRequests = refundRequestOrders + pendingItemRefunds,
-            VoidRequests = await orders.CountAsync(o => o.OrderStatus == "Void Requested", cancellationToken),
-            LowStockCount = lowStock.Count,
-            LowStockItems = lowStock.Take(5).ToList(),
-        };
     }
 
     private async Task<List<DashboardBranchTodayDto>> LoadBranchesTodayAsync(

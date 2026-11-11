@@ -158,6 +158,9 @@ public class PosDbContext : DbContext
             // SubmittedBy, ApprovedBy reference users in auth_db — stored as plain int, no FK constraint
 
             entity.HasIndex(e => e.OrderNumber).IsUnique();
+            // Date-range lookups for the owner dashboard and sales reports.
+            entity.HasIndex(e => e.CreatedAt);
+            entity.HasIndex(e => e.ApprovedAt);
 
             entity.HasMany(e => e.OrderItems)
                 .WithOne(oi => oi.Order)
@@ -180,6 +183,7 @@ public class PosDbContext : DbContext
             entity.Property(e => e.GatewayReferenceNumber).HasMaxLength(100);
             entity.Property(e => e.PaymentStatus).IsRequired().HasMaxLength(30);
             entity.Property(e => e.PaidAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.HasIndex(e => e.PaidAt);
         });
 
         // ── OrderItem ──
@@ -241,6 +245,7 @@ public class PosDbContext : DbContext
             entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
             entity.Property(e => e.UpdatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
             // RequestedBy, ApprovedBy reference users in auth_db — stored as plain int, no FK constraint
+            entity.HasIndex(e => new { e.Status, e.ApprovedAt });
 
             entity.HasOne(e => e.Variation)
                 .WithMany()

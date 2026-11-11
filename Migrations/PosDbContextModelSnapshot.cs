@@ -228,6 +228,10 @@ namespace api_pos.Migrations
 
                     b.HasKey("OrderId");
 
+                    b.HasIndex("ApprovedAt");
+
+                    b.HasIndex("CreatedAt");
+
                     b.HasIndex("LocationId");
 
                     b.HasIndex("OrderNumber")
@@ -425,6 +429,8 @@ namespace api_pos.Migrations
                     b.HasKey("PaymentId");
 
                     b.HasIndex("OrderId");
+
+                    b.HasIndex("PaidAt");
 
                     b.ToTable("Payments");
                 });
@@ -711,6 +717,8 @@ namespace api_pos.Migrations
                     b.HasKey("RefundRequestId");
 
                     b.HasIndex("VariationId");
+
+                    b.HasIndex("Status", "ApprovedAt");
 
                     b.ToTable("RefundRequests");
                 });

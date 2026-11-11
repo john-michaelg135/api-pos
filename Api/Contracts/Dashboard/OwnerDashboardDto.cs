@@ -23,7 +23,6 @@ public class OwnerDashboardDto
     public List<DashboardBranchSalesDto> SalesByBranch { get; set; } = new();
     public List<DashboardTopProductDto> TopProducts { get; set; } = new();
     public List<DashboardChannelSalesDto> SalesByChannel { get; set; } = new();
-    public DashboardAttentionDto Attention { get; set; } = new();
     public List<DashboardBranchTodayDto> BranchesToday { get; set; } = new();
 }
 
@@ -62,27 +61,6 @@ public class DashboardChannelSalesDto
     public string Channel { get; set; } = string.Empty;  // Walk-in | Institutional | Online
     public decimal Sales { get; set; }
     public int Orders { get; set; }
-}
-
-public class DashboardAttentionDto
-{
-    public decimal UnpaidBalanceAmount { get; set; }
-    public int UnpaidBalanceOrders { get; set; }
-    public int ReadyToShip { get; set; }
-    public int OnlineOrdersToApprove { get; set; }
-    public int RefundRequests { get; set; }
-    public int VoidRequests { get; set; }
-    public int LowStockCount { get; set; }
-    public List<DashboardLowStockItemDto> LowStockItems { get; set; } = new();
-}
-
-public class DashboardLowStockItemDto
-{
-    public string ProductName { get; set; } = string.Empty;
-    public string VariationName { get; set; } = string.Empty;
-    public string BranchName { get; set; } = string.Empty;
-    public int Quantity { get; set; }
-    public int ReorderLevel { get; set; }
 }
 
 public class DashboardBranchTodayDto
