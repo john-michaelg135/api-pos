@@ -1064,8 +1064,16 @@ public class OrderManagementService : IOrderManagementService
     {
         var item = order.OrderItems.FirstOrDefault(i => i.VariationId == variationId);
         var product = item?.ProductVariation?.Product?.ProductName;
-        var variation = item?.ProductVariation?.VariationName;
+        var variation = VariationLabel(item?.ProductVariation?.VariationName);
         return product == null ? "this item" : string.IsNullOrWhiteSpace(variation) ? product : $"{product} ({variation})";
+    }
+
+    // "Jar · 300g" from "UJM-SM-300|Jar|300g" (the SKU is left out); names without parts as they are.
+    private static string? VariationLabel(string? variationName)
+    {
+        if (string.IsNullOrWhiteSpace(variationName) || !variationName.Contains('|')) return variationName;
+        var parts = variationName.Split('|').Select(p => p.Trim()).ToArray();
+        return string.Join(" · ", parts.Skip(1).Where(p => p.Length > 0));
     }
 
     private static decimal UnitPriceOf(Order order, int variationId) =>
