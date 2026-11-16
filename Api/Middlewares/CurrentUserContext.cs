@@ -59,7 +59,10 @@ public class CurrentUserContext
     /// <summary>br-auth role string (e.g. "Staff/Employee", "Super Admin").</summary>
     public string? Role { get; set; }
 
-    /// <summary>True for br-auth Super Admin / CEO — bypasses all granular checks.</summary>
+    /// <summary>
+    /// True for br-auth Super Admin / CEO and the General Manager — sees every location and bypasses
+    /// all granular checks. The Dashboard stays owner-only by Role (see PortalSessionMiddleware).
+    /// </summary>
     public bool IsSuperUser { get; set; }
 
     /// <summary>Granular POS permissions per module (from the br-auth `permissions` claim).</summary>

@@ -30,6 +30,15 @@ public sealed class PortalSessionMiddleware
         "Super Admin",
         "CEO",
     };
+    private const string GeneralManagerRole = "General Manager";
+    // The General Manager sees every location like the owner, but only in the Modules the Portal granted
+    // and never the Dashboard.
+    private static readonly HashSet<string> AllLocationRoles = new(StringComparer.Ordinal)
+    {
+        "Super Admin",
+        "CEO",
+        GeneralManagerRole,
+    };
 
     private readonly RequestDelegate _next;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -91,16 +100,15 @@ public sealed class PortalSessionMiddleware
             return;
         }
 
-        var isMineRequest = IsMineRequest(context.Request.Path);
+        // The location list feeds every page's location selector, so any POS Module may read it.
+        var isMineRequest = IsMineRequest(context.Request.Path) || IsLocationListRequest(context.Request);
         // Super Admin and CEO open the Dashboard whatever the Portal granted, so any POS Module proves who they are.
         var isDashboardRequest = context.Request.Path.StartsWithSegments(DashboardPath, StringComparison.OrdinalIgnoreCase);
         var isLocationManagementRequest =
             context.Request.Path.StartsWithSegments(LocationsPath, StringComparison.OrdinalIgnoreCase) &&
-            !isMineRequest &&
-            !(HttpMethods.IsGet(context.Request.Method) &&
-              context.Request.Path.Equals(LocationsPath, StringComparison.OrdinalIgnoreCase));
+            !isMineRequest;
         string[] modulesToValidate = isMineRequest
-            ? PosModules
+            ? [.. PosModules, LocationManagementModule]
             : isDashboardRequest
             ? [DashboardModule, .. PosModules]
             : [requiredModule];
@@ -198,9 +206,9 @@ public sealed class PortalSessionMiddleware
             return;
         }
 
-        if (isLocationManagementRequest && !AdministratorRoles.Contains(validation.Staff.Role))
+        if (isLocationManagementRequest && !AllLocationRoles.Contains(validation.Staff.Role))
         {
-            await WriteErrorAsync(context, StatusCodes.Status403Forbidden, "Only Super Admins and CEOs can manage locations.");
+            await WriteErrorAsync(context, StatusCodes.Status403Forbidden, "Only Super Admins, CEOs and General Managers can manage locations.");
             return;
         }
 
@@ -216,7 +224,7 @@ public sealed class PortalSessionMiddleware
             Username = validation.Staff.Username!,
             DisplayName = validation.Staff.Name,
             Role = validation.Staff.Role,
-            IsSuperUser = AdministratorRoles.Contains(validation.Staff.Role),
+            IsSuperUser = AllLocationRoles.Contains(validation.Staff.Role),
             Apps = ["POS"],
         };
 
@@ -225,6 +233,10 @@ public sealed class PortalSessionMiddleware
 
     private static bool IsMineRequest(PathString path) =>
         path.Value?.Equals($"{LocationsPath}/mine", StringComparison.OrdinalIgnoreCase) == true;
+
+    private static bool IsLocationListRequest(HttpRequest request) =>
+        HttpMethods.IsGet(request.Method) &&
+        request.Path.Equals(LocationsPath, StringComparison.OrdinalIgnoreCase);
 
     private static string? GetRequiredModule(PathString path, string method)
     {
@@ -275,6 +287,7 @@ public sealed class PortalSessionMiddleware
                 or ProductManagementModule
                 or StockManagementModule
                 or SalesReportsModule,
+            GeneralManagerRole => module is not DashboardModule,
             _ => false,
         };
     }
