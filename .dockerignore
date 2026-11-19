@@ -16,3 +16,4 @@
 .gitignore
 Dockerfile
 README.md
+tests/

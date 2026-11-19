@@ -1,3 +1,4 @@
+using Applications.Audit;
 using Applications.Interfaces;
 using Api.Contracts.Inventory;
 using Domains.Entities;
@@ -155,14 +156,12 @@ private readonly IAuditLogService _auditLogService;
             UpdatedAt = stock.UpdatedAt
         };
 
-        _auditLogService.Log(
-            action: "Create",
-            entity: "StockReceiving",
-            entityId: receiving.ReceivingId,
-            before: null,
-            after: response,
-            performedBy: null
-        );
+        // Staff receive through the page; the SCMS pull job has no request and acts as itself.
+        var actor = _httpContextAccessor.HttpContext is null
+            ? AuditActor.Process("pos-scms-delivery-sync", "POS SCMS delivery sync")
+            : null;
+        await _auditLogService.RecordAsync(
+            StockAudit.ReceiptRecorded(receiving, StockAudit.ItemLabel(variation), location.LocationName, actor));
 
         return response;
     }
@@ -721,14 +720,8 @@ private readonly IAuditLogService _auditLogService;
             UpdatedAt = DateTime.UtcNow
         };
 
-        _auditLogService.Log(
-            action: "Create",
-            entity: "StockAdjustment",
-            entityId: adjustment.AdjustmentId,
-            before: null,
-            after: response,
-            performedBy: null
-        );
+        var (item, branch) = await AdjustmentLabelsAsync(adjustment);
+        await _auditLogService.RecordAsync(StockAudit.AdjustmentSubmitted(adjustment, item, branch));
 
         return response;
     }
@@ -777,6 +770,7 @@ private readonly IAuditLogService _auditLogService;
             _db.Stocks.Update(stock);
         }
 
+        var previousStatus = adjustment.Status;
         adjustment.Status = "Approved";
         adjustment.ApprovedBy = approvedBy;
         adjustment.ApprovedAt = DateTime.UtcNow;
@@ -799,15 +793,18 @@ private readonly IAuditLogService _auditLogService;
             UpdatedAt = DateTime.UtcNow
         };
 
-        _auditLogService.Log(
-            action: "Update",
-            entity: "StockAdjustment",
-            entityId: adjustment.AdjustmentId,
-            before: new { Status = "Pending" },
-            after: new { Status = "Approved", ApprovedBy = approvedBy },
-            performedBy: null
-        );
+        var (item, branch) = await AdjustmentLabelsAsync(adjustment);
+        await _auditLogService.RecordAsync(StockAudit.AdjustmentApproved(adjustment, item, branch, previousStatus));
 
         return response;
+    }
+
+    private async Task<(string Item, string? Branch)> AdjustmentLabelsAsync(StockAdjustment adjustment)
+    {
+        var variation = await _db.ProductVariations.AsNoTracking().Include(v => v.Product)
+            .FirstOrDefaultAsync(v => v.VariationId == adjustment.VariationId);
+        var branch = await _db.Locations.AsNoTracking()
+            .Where(l => l.LocationId == adjustment.LocationId).Select(l => l.LocationName).FirstOrDefaultAsync();
+        return (StockAudit.ItemLabel(variation), branch);
     }
 }

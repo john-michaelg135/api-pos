@@ -1,3 +1,4 @@
+using Applications.Audit;
 using Applications.Interfaces;
 using Api.Contracts.StockAdjustment;
 using Domains.Entities;
@@ -72,18 +73,9 @@ public class StockAdjustmentService : IStockAdjustmentService
         await _db.StockAdjustments.AddAsync(adjustment);
         await _db.SaveChangesAsync();
 
-        var response = MapToResponse(adjustment, variation.VariationName, variation.Product?.ProductName ?? string.Empty, location.LocationName);
+        await _auditLogService.RecordAsync(StockAudit.AdjustmentSubmitted(adjustment, StockAudit.ItemLabel(variation), location.LocationName));
 
-        _auditLogService.Log(
-            action: "Create",
-            entity: "StockAdjustment",
-            entityId: adjustment.AdjustmentId,
-            before: null,
-            after: response,
-            performedBy: null
-        );
-
-        return response;
+        return MapToResponse(adjustment, variation.VariationName, variation.Product?.ProductName ?? string.Empty, location.LocationName);
     }
 
     // ────────────────────────────────────────────────────
@@ -138,22 +130,14 @@ public class StockAdjustmentService : IStockAdjustmentService
         _db.StockAdjustments.Update(adjustment);
         await _db.SaveChangesAsync();
 
-        var response = MapToResponse(
+        await _auditLogService.RecordAsync(StockAudit.AdjustmentApproved(
+            adjustment, StockAudit.ItemLabel(adjustment.Variation), adjustment.Location?.LocationName, "PendingApproval"));
+
+        return MapToResponse(
             adjustment,
             adjustment.Variation?.VariationName ?? string.Empty,
             adjustment.Variation?.Product?.ProductName ?? string.Empty,
             adjustment.Location?.LocationName ?? string.Empty);
-
-        _auditLogService.Log(
-            action: "Update",
-            entity: "StockAdjustment",
-            entityId: adjustment.AdjustmentId,
-            before: new { Status = "PendingApproval" },
-            after: new { Status = "Approved", ApprovedBy = dto.ApprovedBy },
-            performedBy: null
-        );
-
-        return response;
     }
 
     // ────────────────────────────────────────────────────

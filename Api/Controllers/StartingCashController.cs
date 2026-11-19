@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Infrastructures.Persistence;
 using Domains.Entities;
 using Api.Middlewares;
+using Applications.Audit;
 using Applications.Interfaces;
 using Applications.Services;
 using Npgsql;
@@ -62,17 +63,20 @@ public class StartingCashController : ControllerBase
     private readonly PosDbContext _db;
     private readonly IPortalUserDirectory _portalUserDirectory;
     private readonly IShiftAutoCloseService _shiftAutoClose;
+    private readonly IAuditLogService _audit;
     private readonly bool _authEnabled;
 
     public StartingCashController(
         PosDbContext db,
         IConfiguration configuration,
         IPortalUserDirectory portalUserDirectory,
-        IShiftAutoCloseService shiftAutoClose)
+        IShiftAutoCloseService shiftAutoClose,
+        IAuditLogService audit)
     {
         _db = db;
         _portalUserDirectory = portalUserDirectory;
         _shiftAutoClose = shiftAutoClose;
+        _audit = audit;
         _authEnabled = string.Equals(
             configuration["AUTH_MIDDLEWARE_ENABLED"], "true",
             StringComparison.OrdinalIgnoreCase);
@@ -254,6 +258,8 @@ public class StartingCashController : ControllerBase
         _db.StartingCashEntries.Add(entry);
         await _db.SaveChangesAsync();
 
+        await _audit.RecordAsync(StartingCashAudit.Opened(entry, location.LocationName));
+
         return Ok(Map(entry));
     }
 
@@ -316,6 +322,9 @@ public class StartingCashController : ControllerBase
             .AsNoTracking()
             .Include(record => record.Location)
             .FirstAsync(record => record.Id == entry.Id, cancellationToken);
+
+        await _audit.RecordAsync(StartingCashAudit.Closed(closedEntry, closedEntry.Location?.LocationName, actor: null));
+
         return Ok(Map(closedEntry, nonCashSales: nonCashSales));
     }
 

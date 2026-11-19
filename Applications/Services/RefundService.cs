@@ -1,3 +1,4 @@
+using Applications.Audit;
 using Applications.Interfaces;
 using Api.Contracts.Refund;
 using Domains.Entities;
@@ -73,18 +74,10 @@ public class RefundService : IRefundService
         await _db.RefundRequests.AddAsync(refund);
         await _db.SaveChangesAsync();
 
-        var response = MapToResponse(refund);
+        await RecordRefundAsync(refund, order.OrderNumber, AuditActions.Created, "refund_requested",
+            "requested a refund", refund.CreatedAt, $"refund-request:{refund.RefundRequestId}", previousStatus: null);
 
-        _auditLogService.Log(
-            action: "Create",
-            entity: "RefundRequest",
-            entityId: refund.RefundRequestId,
-            before: null,
-            after: response,
-            performedBy: null
-        );
-
-        return response;
+        return MapToResponse(refund);
     }
 
     // ────────────────────────────────────────────────────
@@ -145,14 +138,8 @@ public class RefundService : IRefundService
         // US-POS-025: Push live notification to cashiers at that location
         _ = _refundNotificationService.NotifyRefundApprovedAsync(refund.LocationId, response);
 
-        _auditLogService.Log(
-            action: "Update",
-            entity: "RefundRequest",
-            entityId: refund.RefundRequestId,
-            before: new { Status = "Pending" },
-            after: new { Status = "Approved", ApprovedBy = dto.ApprovedBy },
-            performedBy: null
-        );
+        await RecordRefundAsync(refund, await OrderNumberAsync(refund.OrderId), AuditActions.Updated, "refund_approved",
+            "approved", now, $"refund-request-approved:{refund.RefundRequestId}", previousStatus: "Pending");
 
         return response;
     }
@@ -185,18 +172,10 @@ public class RefundService : IRefundService
         _db.RefundRequests.Update(refund);
         await _db.SaveChangesAsync();
 
-        var response = MapToResponse(refund);
+        await RecordRefundAsync(refund, await OrderNumberAsync(refund.OrderId), AuditActions.Updated, "refund_rejected",
+            "rejected", now, $"refund-request-rejected:{refund.RefundRequestId}", previousStatus: "Pending");
 
-        _auditLogService.Log(
-            action: "Update",
-            entity: "RefundRequest",
-            entityId: refund.RefundRequestId,
-            before: new { Status = "Pending" },
-            after: new { Status = "Rejected", ApprovedBy = dto.ApprovedBy },
-            performedBy: null
-        );
-
-        return response;
+        return MapToResponse(refund);
     }
 
 
@@ -221,6 +200,40 @@ public class RefundService : IRefundService
 
         return refunds.Select(MapToResponse).ToList();
     }
+
+    // Per-item refund API: the target is the refund request, filed under its order's number.
+    private async Task RecordRefundAsync(
+        RefundRequest refund, string? orderNumber, string action, string operation, string verb,
+        DateTime occurredAt, string operationId, string? previousStatus)
+    {
+        var label = $"Refund request #{refund.RefundRequestId}";
+        var branch = await _db.Locations.AsNoTracking()
+            .Where(l => l.LocationId == refund.LocationId).Select(l => l.LocationName).FirstOrDefaultAsync();
+        var onOrder = orderNumber is null ? string.Empty : $" for Order {orderNumber}";
+        var what = action == AuditActions.Created ? $"{verb}{onOrder}" : $"{verb} {label.ToLowerInvariant()}{onOrder}";
+        await _auditLogService.RecordAsync(new AuditEvent
+        {
+            Module = PosModules.OrderManagement,
+            Action = action,
+            Target = new AuditTarget("refund_request", refund.RefundRequestId.ToString(System.Globalization.CultureInfo.InvariantCulture), label),
+            Describe = who => $"{who} {what}{OrderAudit.AtBranch(branch, refund.LocationId)}.",
+            OccurredAt = occurredAt,
+            OperationId = operationId,
+            Metadata = new Dictionary<string, object?>
+            {
+                ["operation"] = operation,
+                ["order_id"] = refund.OrderId,
+                ["location_id"] = refund.LocationId,
+                ["variation_id"] = refund.VariationId,
+                ["quantity"] = refund.QuantityToReturn,
+                ["previous_status"] = previousStatus,
+                ["new_status"] = refund.Status,
+            },
+        });
+    }
+
+    private async Task<string?> OrderNumberAsync(int orderId) =>
+        await _db.Orders.AsNoTracking().Where(o => o.OrderId == orderId).Select(o => o.OrderNumber).FirstOrDefaultAsync();
 
     private static RefundResponseDto MapToResponse(RefundRequest r) => new()
     {

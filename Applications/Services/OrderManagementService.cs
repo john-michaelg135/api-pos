@@ -7,6 +7,7 @@ using Infrastructures.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Http;
 using Api.Middlewares;
+using Applications.Audit;
 
 namespace Applications.Services;
 
@@ -87,9 +88,10 @@ public class OrderManagementService : IOrderManagementService
         order.ApprovedAt = now;
         order.UpdatedAt = now;
 
-        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Processing", dto.ApprovedBy, "Order approved");
+        var history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Processing", dto.ApprovedBy, "Order approved");
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
+        await AuditOrderAsync(order, history, "order_approved", "approved");
 
         // Deduct stock for pre-orders upon transitioning to "Processing"
         if (order.IsPreorder && order.LocationId.HasValue)
@@ -143,9 +145,10 @@ public class OrderManagementService : IOrderManagementService
         order.RejectionRemarks = dto.RejectionRemarks;
         order.UpdatedAt = now;
 
-        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Cancelled", dto.RejectedBy, $"Order rejected: {dto.RejectionRemarks}");
+        var history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Cancelled", dto.RejectedBy, $"Order rejected: {dto.RejectionRemarks}");
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
+        await AuditOrderAsync(order, history, "order_rejected", "rejected");
 
         if (shouldRestoreStock)
         {
@@ -277,7 +280,7 @@ public class OrderManagementService : IOrderManagementService
         order.ApprovedAt    = now;
         order.UpdatedAt     = now;
 
-        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Completed", confirmedBy, "COD delivery confirmed");
+        var history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Completed", confirmedBy, "COD delivery confirmed");
         _db.Orders.Update(order);
 
         // POS-031: Write Payment record on delivery confirm
@@ -292,6 +295,7 @@ public class OrderManagementService : IOrderManagementService
         await _db.Payments.AddAsync(payment);
 
         await _db.SaveChangesAsync();
+        await AuditOrderAsync(order, history, "delivery_confirmed", "confirmed the COD delivery of");
 
         // POS-011: Auto deduct stock per item at this location (only if not already deducted for Ecommerce orders at checkout)
         if (order.LocationId.HasValue && !string.Equals(order.OrderSource, "Ecommerce", StringComparison.OrdinalIgnoreCase))
@@ -411,11 +415,12 @@ public class OrderManagementService : IOrderManagementService
         }
 
         var byWhom = confirmation.ConfirmedByName != null ? $" by {confirmation.ConfirmedByName}" : "";
-        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Completed", dto.ConfirmedBy,
+        var history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Completed", dto.ConfirmedBy,
             $"Delivery confirmed{byWhom}. Received by {receivedBy}.");
 
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
+        await AuditOrderAsync(order, history, "delivery_confirmed", "confirmed the delivery of");
 
         var response = MapToResponse(order);
         response.DeliveryConfirmation = MapDeliveryConfirmation(confirmation);
@@ -679,7 +684,7 @@ public class OrderManagementService : IOrderManagementService
             historyRemark = order.RejectionRemarks;
         }
 
-        await RecordStatusHistoryAsync(order.OrderId, currentStatus, targetStatus, dto.UpdatedBy, historyRemark);
+        var history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, targetStatus, dto.UpdatedBy, historyRemark);
 
         if (string.Equals(targetStatus, "Processing", StringComparison.OrdinalIgnoreCase))
         {
@@ -777,6 +782,9 @@ public class OrderManagementService : IOrderManagementService
 
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
+        await AuditOrderAsync(order, history,
+            isCancel ? "order_cancelled" : "status_changed",
+            isCancel ? "cancelled" : $"changed the status to {targetStatus} for");
 
         return MapToResponse(order);
     }
@@ -828,11 +836,12 @@ public class OrderManagementService : IOrderManagementService
         if (currentStatus == "Processing")
             order.OrderStatus = "Paid";
 
-        await RecordStatusHistoryAsync(order.OrderId, currentStatus, order.OrderStatus, confirmedBy,
+        var history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, order.OrderStatus, confirmedBy,
             $"Remaining GCash balance of ₱{balance:N2} confirmed in wallet. Order fully paid.");
 
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
+        await AuditOrderAsync(order, history, "payment_completed", "completed the payment for");
 
         return MapToResponse(order);
     }
@@ -988,10 +997,21 @@ public class OrderManagementService : IOrderManagementService
         order.RejectionRemarks = trimmedReason; // Store reason here as agreed
         order.UpdatedAt = now;
 
-        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Refund Requested", 1,
+        // Partial unless this request brings back every unit bought.
+        var alreadyRefunded = await LoadRefundQuantitiesAsync(order.OrderId);
+        var requestIsPartial = order.OrderItems
+            .GroupBy(i => i.VariationId)
+            .Any(g => g.Sum(i => i.Quantity)
+                > (alreadyRefunded.TryGetValue(g.Key, out var q) ? q.Approved : 0)
+                  + lines.Where(l => l.VariationId == g.Key).Sum(l => l.Quantity));
+
+        var history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Refund Requested", 1,
             $"{trimmedReason} ({DescribeRefundLines(order, lines)})");
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
+        await AuditOrderAsync(order, history, "refund_requested",
+            requestIsPartial ? "requested a partial refund for" : "requested a full refund for",
+            partial: requestIsPartial);
 
         return MapToResponse(order);
     }
@@ -1182,23 +1202,28 @@ public class OrderManagementService : IOrderManagementService
         var summary = DescribeRefundLines(order, pending.Select(r => new RefundLine(r.VariationId, r.QuantityToReturn)));
 
         var currentStatus = order.OrderStatus;
+        OrderStatusHistory history;
         if (fullyRefunded)
         {
             order.OrderStatus = "Refunded";
             order.ApprovedBy = await _staff.CurrentStaffIdAsync() ?? approvedBy;
             order.ApprovedAt = now;
-            await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Refunded", approvedBy, $"Refund approved ({summary})");
+            history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Refunded", approvedBy, $"Refund approved ({summary})");
         }
         else
         {
             var previousStatus = await PreviousStatusBeforeRefundRequestAsync(orderId);
             order.OrderStatus = previousStatus;
-            await RecordStatusHistoryAsync(order.OrderId, currentStatus, previousStatus, approvedBy, $"Partial refund approved ({summary})");
+            history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, previousStatus, approvedBy, $"Partial refund approved ({summary})");
         }
         order.UpdatedAt = now;
         _db.Orders.Update(order);
 
         await _db.SaveChangesAsync();
+        // One manager decision, however many lines it covers.
+        await AuditOrderAsync(order, history, "refund_approved",
+            fullyRefunded ? "approved a full refund for" : "approved a partial refund for",
+            partial: !fullyRefunded);
 
         // POS-017: Auto restore stock per refunded item. Unsellable goods (in-store "Damaged/Expired
         // (Unsellable)", institutional "Damaged (Unsellable)") were refunded but can't be
@@ -1284,7 +1309,7 @@ public class OrderManagementService : IOrderManagementService
         order.RejectionRemarks = $"Refund Rejected: {reason}";
         order.UpdatedAt = DateTime.UtcNow;
 
-        await RecordStatusHistoryAsync(order.OrderId, currentStatus, revertStatus, rejectedBy, $"Refund rejected: {reason}");
+        var history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, revertStatus, rejectedBy, $"Refund rejected: {reason}");
         _db.Orders.Update(order);
 
         // Only the request being rejected; earlier approved refunds on this order stay approved.
@@ -1297,6 +1322,8 @@ public class OrderManagementService : IOrderManagementService
         }
 
         await _db.SaveChangesAsync();
+        // A saved decision to reject is a successful change.
+        await AuditOrderAsync(order, history, "refund_rejected", "rejected the refund request for");
 
         return MapToResponse(order);
     }
@@ -1333,9 +1360,10 @@ public class OrderManagementService : IOrderManagementService
         order.RejectionRemarks = reason;
         order.UpdatedAt = DateTime.UtcNow;
 
-        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Void Requested", 1, reason);
+        var history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Void Requested", 1, reason);
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
+        await AuditOrderAsync(order, history, "void_requested", "requested a void of");
 
         return MapToResponse(order);
     }
@@ -1395,9 +1423,10 @@ public class OrderManagementService : IOrderManagementService
         order.ApprovedAt = DateTime.UtcNow;
         order.UpdatedAt = DateTime.UtcNow;
 
-        await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Voided", approvedBy, "Void approved");
+        var history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Voided", approvedBy, "Void approved");
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
+        await AuditOrderAsync(order, history, "void_approved", "approved the void of");
 
         if (order.LocationId.HasValue)
         {
@@ -1463,14 +1492,38 @@ public class OrderManagementService : IOrderManagementService
         order.RejectionRemarks = $"Void Rejected: {reason}";
         order.UpdatedAt = DateTime.UtcNow;
 
-        await RecordStatusHistoryAsync(order.OrderId, currentStatus, revertStatus, rejectedBy, $"Void rejected: {reason}");
+        var history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, revertStatus, rejectedBy, $"Void rejected: {reason}");
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
+        await AuditOrderAsync(order, history, "void_rejected", "rejected the void request for");
 
         return MapToResponse(order);
     }
 
-    private async Task RecordStatusHistoryAsync(int orderId, string oldStatus, string newStatus, int? changedBy, string? remarks = null)
+    // One event per saved status change; the history row is the occurrence, so a replay keeps its identity.
+    private Task AuditOrderAsync(Order order, OrderStatusHistory history, string operation, string verb, bool? partial = null)
+    {
+        var target = OrderAudit.Target(order.OrderId, order.OrderNumber);
+        return _auditLogService.RecordAsync(new AuditEvent
+        {
+            Module = PosModules.OrderManagement,
+            Action = AuditActions.Updated,
+            Target = target,
+            Describe = who => $"{who} {verb} {target.DisplayName}{OrderAudit.AtBranch(order.Location?.LocationName, order.LocationId)}.",
+            OccurredAt = history.CreatedAt,
+            OperationId = $"order-history:{history.Id}",
+            Metadata = new Dictionary<string, object?>
+            {
+                ["operation"] = operation,
+                ["location_id"] = order.LocationId,
+                ["previous_status"] = history.OldStatus,
+                ["new_status"] = history.NewStatus,
+                ["partial"] = partial,
+            },
+        });
+    }
+
+    private async Task<OrderStatusHistory> RecordStatusHistoryAsync(int orderId, string oldStatus, string newStatus, int? changedBy, string? remarks = null)
     {
         var history = new OrderStatusHistory
         {
@@ -1482,6 +1535,7 @@ public class OrderManagementService : IOrderManagementService
             CreatedAt = DateTime.UtcNow
         };
         await _db.OrderStatusHistories.AddAsync(history);
+        return history;
     }
 
     private void EnsureCurrentUserCanAccessOrderLocation(Order order)

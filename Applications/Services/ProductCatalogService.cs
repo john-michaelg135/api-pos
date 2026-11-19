@@ -1,5 +1,7 @@
+using Applications.Audit;
 using Applications.Interfaces;
 using Api.Contracts.ProductCatalog;
+using Api.Middlewares;
 using Domains.Entities;
 using Infrastructures.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -35,18 +37,11 @@ public class ProductCatalogService : IProductCatalogService
         await _db.Products.AddAsync(product);
         await _db.SaveChangesAsync();
 
-        var response = MapToProductResponse(product);
+        await RecordAsync(AuditActions.Created, ProductTarget(product), who => $"{who} created product {product.ProductName}.",
+            DateTime.UtcNow, $"product-created:{product.ProductId}",
+            new() { ["operation"] = "product_created", ["product_id"] = product.ProductId });
 
-        _auditLogService.Log(
-            action: "Create",
-            entity: "Product",
-            entityId: product.ProductId,
-            before: null,
-            after: response,
-            performedBy: null
-        );
-
-        return response;
+        return MapToProductResponse(product);
     }
 
     public async Task<ProductResponseDto?> UpdateProductAsync(int productId, UpdateProductDto dto)
@@ -58,27 +53,26 @@ public class ProductCatalogService : IProductCatalogService
 
         if (product == null) return null;
 
-        if (dto.ProductName != null) product.ProductName = dto.ProductName;
-        if (dto.ProductCategory != null) product.ProductCategory = dto.ProductCategory;
-        if (dto.ProductDescription != null) product.ProductDescription = dto.ProductDescription;
-        if (dto.ProductImage != null) product.ProductImage = dto.ProductImage;
-        if (dto.IsActive.HasValue) product.IsActive = dto.IsActive.Value;
+        var changed = new List<string>();
+        if (dto.ProductName != null && dto.ProductName != product.ProductName) { product.ProductName = dto.ProductName; changed.Add("name"); }
+        if (dto.ProductCategory != null && dto.ProductCategory != product.ProductCategory) { product.ProductCategory = dto.ProductCategory; changed.Add("category"); }
+        if (dto.ProductDescription != null && dto.ProductDescription != product.ProductDescription) { product.ProductDescription = dto.ProductDescription; changed.Add("description"); }
+        if (dto.ProductImage != null && dto.ProductImage != product.ProductImage) { product.ProductImage = dto.ProductImage; changed.Add("image"); }
+        if (dto.IsActive.HasValue && dto.IsActive.Value != product.IsActive) { product.IsActive = dto.IsActive.Value; changed.Add("active"); }
 
         _db.Products.Update(product);
         await _db.SaveChangesAsync();
 
-        var response = MapToProductResponse(product);
+        // An edit has no saved revision, so each submission is its own occurrence (operationId null).
+        if (changed.Count > 0)
+        {
+            await RecordAsync(AuditActions.Updated, ProductTarget(product),
+                who => $"{who} edited product {product.ProductName} ({string.Join(", ", changed)}).",
+                DateTime.UtcNow, operationId: null,
+                new() { ["operation"] = "product_updated", ["product_id"] = product.ProductId, ["changed_fields"] = changed });
+        }
 
-        _auditLogService.Log(
-            action: "Update",
-            entity: "Product",
-            entityId: product.ProductId,
-            before: null, // Keep simple for now
-            after: response,
-            performedBy: null
-        );
-
-        return response;
+        return MapToProductResponse(product);
     }
 
     public async Task<List<ProductResponseDto>> GetAllProductsAsync()
@@ -136,6 +130,17 @@ public class ProductCatalogService : IProductCatalogService
         await _db.ProductPrices.AddAsync(price);
         await _db.SaveChangesAsync();
 
+        await RecordAsync(AuditActions.Created, VariationTarget(variation, product.ProductName),
+            who => $"{who} added variation {VariationLabel(variation.VariationName)} to {product.ProductName} at ₱{dto.InitialPrice:N2}.",
+            now, $"variation-created:{variation.VariationId}",
+            new()
+            {
+                ["operation"] = "variation_created",
+                ["product_id"] = productId,
+                ["variation_id"] = variation.VariationId,
+                ["new_price"] = dto.InitialPrice,
+            });
+
         return new VariationResponseDto
         {
             VariationId = variation.VariationId,
@@ -153,11 +158,27 @@ public class ProductCatalogService : IProductCatalogService
 
         if (variation == null) return null;
 
-        if (dto.VariationName != null) variation.VariationName = dto.VariationName;
-        if (dto.IsActive.HasValue) variation.IsActive = dto.IsActive.Value;
+        var changed = new List<string>();
+        if (dto.VariationName != null && dto.VariationName != variation.VariationName) { variation.VariationName = dto.VariationName; changed.Add("name"); }
+        if (dto.IsActive.HasValue && dto.IsActive.Value != variation.IsActive) { variation.IsActive = dto.IsActive.Value; changed.Add("active"); }
 
         _db.ProductVariations.Update(variation);
         await _db.SaveChangesAsync();
+
+        if (changed.Count > 0)
+        {
+            var productName = await ProductNameAsync(variation.ProductId);
+            await RecordAsync(AuditActions.Updated, VariationTarget(variation, productName),
+                who => $"{who} edited variation {VariationLabel(variation.VariationName)} of {productName} ({string.Join(", ", changed)}).",
+                DateTime.UtcNow, operationId: null,
+                new()
+                {
+                    ["operation"] = "variation_updated",
+                    ["product_id"] = variation.ProductId,
+                    ["variation_id"] = variation.VariationId,
+                    ["changed_fields"] = changed,
+                });
+        }
 
         var activePrice = variation.ProductPrices.FirstOrDefault(pp => pp.IsActive);
 
@@ -219,6 +240,23 @@ public class ProductCatalogService : IProductCatalogService
 
         await _db.ProductPrices.AddAsync(newPrice);
         await _db.SaveChangesAsync();
+
+        // Each saved price row is its own occurrence, so two edits of one price never collapse.
+        var productName = await ProductNameAsync(variation.ProductId);
+        var oldPrice = currentActivePrice?.Price;
+        await RecordAsync(AuditActions.Updated, VariationTarget(variation, productName),
+            who => oldPrice.HasValue
+                ? $"{who} changed the price of {productName} {VariationLabel(variation.VariationName)} from ₱{oldPrice.Value:N2} to ₱{dto.Price:N2}."
+                : $"{who} set the price of {productName} {VariationLabel(variation.VariationName)} to ₱{dto.Price:N2}.",
+            newPrice.CreatedAt, $"price:{newPrice.PriceId}",
+            new()
+            {
+                ["operation"] = "price_set",
+                ["product_id"] = variation.ProductId,
+                ["variation_id"] = variation.VariationId,
+                ["old_price"] = oldPrice,
+                ["new_price"] = dto.Price,
+            });
 
         return new VariationResponseDto
         {
@@ -394,6 +432,43 @@ public class ProductCatalogService : IProductCatalogService
     // ────────────────────────────────────────────────────
     // Private helpers
     // ────────────────────────────────────────────────────
+
+    private Task RecordAsync(
+        string action,
+        AuditTarget target,
+        Func<string, string> describe,
+        DateTime occurredAt,
+        string? operationId,
+        Dictionary<string, object?> metadata) =>
+        _auditLogService.RecordAsync(new AuditEvent
+        {
+            Module = PosModules.ProductManagement,
+            Action = action,
+            Target = target,
+            Describe = describe,
+            OccurredAt = occurredAt,
+            OperationId = operationId,
+            Metadata = metadata,
+        });
+
+    private static AuditTarget ProductTarget(Product product) =>
+        new("product", product.ProductId.ToString(System.Globalization.CultureInfo.InvariantCulture), product.ProductName);
+
+    private static AuditTarget VariationTarget(ProductVariation variation, string? productName) =>
+        new("product_variation",
+            variation.VariationId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            $"{productName ?? "Product"} {VariationLabel(variation.VariationName)}".Trim());
+
+    private async Task<string?> ProductNameAsync(int productId) =>
+        await _db.Products.AsNoTracking().Where(p => p.ProductId == productId).Select(p => p.ProductName).FirstOrDefaultAsync();
+
+    // "Jar · 300g" from "UJM-SM-300|Jar|300g"; names without parts stay as they are.
+    private static string VariationLabel(string? variationName)
+    {
+        if (string.IsNullOrWhiteSpace(variationName)) return string.Empty;
+        if (!variationName.Contains('|')) return variationName;
+        return string.Join(" · ", variationName.Split('|').Skip(1).Select(p => p.Trim()).Where(p => p.Length > 0));
+    }
 
     private static ProductResponseDto MapToProductResponse(Product product)
     {

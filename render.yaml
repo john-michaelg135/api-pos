@@ -77,11 +77,17 @@ services:
       - key: SCMS_SERVICE_KEY
         sync: false
 
-      # ── Audit logs (optional; disabled) ──
+      # ── Audit logs (shared API gateway, "pos" Caller) ──
+      # Rollout switch. "false" means zero outbound audit calls; set it back to
+      # "false" and redeploy to stop delivery. Enable after the staging smoke test.
       - key: AUDIT_SERVICE_ENABLED
         value: "false"
-      - key: AUDIT_SERVICE_URL
+      # Gateway origin, no trailing slash. Events go to {POS_GATEWAY_URL}/audit/events.
+      - key: POS_GATEWAY_URL
         value: ""
+      # Server-only Caller key the gateway owners issued for "pos". Set it in the dashboard.
+      - key: POS_GATEWAY_CALLER_KEY
+        sync: false
 
       # ── Payments (Xendit) ──
       # Deferred: payment configuration is intentionally omitted from this
