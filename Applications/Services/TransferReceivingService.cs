@@ -1,5 +1,7 @@
 using Api.Contracts.Scms;
 using Api.Middlewares;
+using Applications.Audit;
+using Applications.Interfaces;
 using Domains.Entities;
 using Infrastructures.Externals;
 using Infrastructures.Persistence;
@@ -18,13 +20,15 @@ public class TransferReceivingService
     private readonly ScmsApiClient _scms;
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly ILogger<TransferReceivingService> _logger;
+    private readonly IAuditLogService _audit;
 
-    public TransferReceivingService(PosDbContext db, ScmsApiClient scms, IHttpContextAccessor httpContextAccessor, ILogger<TransferReceivingService> logger)
+    public TransferReceivingService(PosDbContext db, ScmsApiClient scms, IHttpContextAccessor httpContextAccessor, ILogger<TransferReceivingService> logger, IAuditLogService audit)
     {
         _db = db;
         _scms = scms;
         _httpContextAccessor = httpContextAccessor;
         _logger = logger;
+        _audit = audit;
     }
 
     public async Task<List<PendingTransferDto>> GetPendingAsync()
@@ -157,6 +161,29 @@ public class TransferReceivingService
         transfer.ReconciliationState = plan.All(p => p.Count.ReceivedQuantity == p.Item.Quantity) ? "Matched" : "Discrepancy";
         transfer.ReconciledAt = now;
         await _db.SaveChangesAsync();
+
+        // One receipt per delivery, when the branch stock is saved. The SCMS confirmation below
+        // (and any retry by the reconciliation sweep) is delivery bookkeeping, not a new change.
+        var receivedUnits = plan.Sum(p => p.Count.ReceivedQuantity);
+        var branchName = await _db.Locations.AsNoTracking()
+            .Where(l => l.LocationId == locationId).Select(l => l.LocationName).FirstOrDefaultAsync();
+        await _audit.RecordAsync(new AuditEvent
+        {
+            Module = PosModules.StockManagement,
+            Action = AuditActions.Updated,
+            Target = new AuditTarget("stock_transfer", transfer.TransferId, $"Delivery {transfer.TransferId}"),
+            Describe = who => $"{who} received delivery {transfer.TransferId} ({receivedUnits} units){OrderAudit.AtBranch(branchName, locationId)}.",
+            OccurredAt = now,
+            OperationId = $"transfer-received:{transfer.TransferId}",
+            Metadata = new Dictionary<string, object?>
+            {
+                ["operation"] = "transfer_received",
+                ["location_id"] = locationId,
+                ["quantity"] = receivedUnits,
+                ["new_status"] = transfer.Status,
+                ["reconciliation"] = transfer.ReconciliationState,
+            },
+        });
 
         // Stock is saved; telling SCMS is best effort. A failure is marked so the
         // reconciliation sweep re-sends the status later.

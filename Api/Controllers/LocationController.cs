@@ -215,7 +215,9 @@ public class LocationController : ControllerBase
 
             dto.AssignedBy = assignedBy;
             dto.IsPrimary = true;
-            var assignment = await _locationService.AssignUserLocationAsync(dto);
+            var staffName = $"{targetUser.FirstName} {targetUser.LastName}".Trim();
+            var assignment = await _locationService.AssignUserLocationAsync(
+                dto, string.IsNullOrWhiteSpace(staffName) ? targetUser.Username : staffName);
             return CreatedAtAction(nameof(GetUserLocations), new { authUserId = dto.AuthUserId }, assignment);
         }
         catch (PortalDirectoryNotConfiguredException)

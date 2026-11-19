@@ -1,3 +1,4 @@
+using Applications.Audit;
 using Applications.Interfaces;
 using Infrastructures.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -12,11 +13,15 @@ namespace Applications.Services;
 /// </summary>
 public class ShiftAutoCloseService : IShiftAutoCloseService
 {
-    private readonly PosDbContext _db;
+    private static readonly AuditActor Job = AuditActor.Process("pos-shift-auto-close", "POS end-of-day shift auto-close");
 
-    public ShiftAutoCloseService(PosDbContext db)
+    private readonly PosDbContext _db;
+    private readonly IAuditLogService _audit;
+
+    public ShiftAutoCloseService(PosDbContext db, IAuditLogService audit)
     {
         _db = db;
+        _audit = audit;
     }
 
     public async Task<int> CloseOverdueShiftsAsync(CancellationToken cancellationToken = default)
@@ -24,6 +29,7 @@ public class ShiftAutoCloseService : IShiftAutoCloseService
         var today = DateOnly.FromDateTime(DateTime.UtcNow.AddHours(8));
 
         var overdue = await _db.StartingCashEntries
+            .Include(entry => entry.Location)
             .Where(entry => entry.EndShiftAt == null && entry.BusinessDate < today)
             .ToListAsync(cancellationToken);
 
@@ -35,6 +41,10 @@ public class ShiftAutoCloseService : IShiftAutoCloseService
         }
 
         if (overdue.Count > 0) await _db.SaveChangesAsync(cancellationToken);
+
+        // Attributed to the job even when the Money Audit page triggered the sweep.
+        foreach (var entry in overdue)
+            await _audit.RecordAsync(StartingCashAudit.Closed(entry, entry.Location?.LocationName, Job));
 
         return overdue.Count;
     }

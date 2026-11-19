@@ -6,6 +6,7 @@ using Infrastructures.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Http;
 using Api.Middlewares;
+using Applications.Audit;
 using System.Globalization;
 using System.Text.RegularExpressions;
 
@@ -250,6 +251,7 @@ public class OrderEntryService : IOrderEntryService
             PaidAt = now
         });
         await _db.SaveChangesAsync();
+        await AuditOrderCreatedAsync(order, downpayment: false);
 
         // POS-011: Auto deduct stock per item at this location
         if (order.LocationId.HasValue)
@@ -268,18 +270,7 @@ public class OrderEntryService : IOrderEntryService
         }
 
         // Return response with full details (order was just created, so it will always exist)
-        var response = await BuildOrderResponse(order.OrderId);
-        
-        _auditLogService.Log(
-            action: "Create",
-            entity: "Order",
-            entityId: order.OrderId,
-            before: null,
-            after: response,
-            performedBy: null // Let service pull from context
-        );
-
-        return response!;
+        return (await BuildOrderResponse(order.OrderId))!;
     }
 
     // ────────────────────────────────────────────────────
@@ -435,6 +426,25 @@ public class OrderEntryService : IOrderEntryService
         await _db.Payments.AddAsync(payment);
 
         await _db.SaveChangesAsync();
+
+        var target = OrderAudit.Target(order.OrderId, order.OrderNumber);
+        var branch = OrderAudit.AtBranch(await LocationNameAsync(order.LocationId), order.LocationId);
+        await _auditLogService.RecordAsync(new AuditEvent
+        {
+            Module = PosModules.SalesProcessing,
+            Action = AuditActions.Updated,
+            Target = target,
+            Describe = who => $"{who} confirmed {target.DisplayName}{branch}.",
+            OccurredAt = history.CreatedAt,
+            OperationId = $"order-history:{history.Id}",
+            Metadata = new Dictionary<string, object?>
+            {
+                ["operation"] = "order_confirmed",
+                ["location_id"] = order.LocationId,
+                ["previous_status"] = history.OldStatus,
+                ["new_status"] = history.NewStatus,
+            },
+        });
 
         // POS-011: Auto deduct stock per item at this location
         if (order.LocationId.HasValue)
@@ -620,6 +630,7 @@ public class OrderEntryService : IOrderEntryService
         });
 
         await _db.SaveChangesAsync();
+        await AuditOrderCreatedAsync(order, downpayment: isPartial);
 
         // Institutional orders reserve/consume branch stock when placed. Delivery
         // confirmation only records fulfillment and must not restore these units.
@@ -647,6 +658,41 @@ public class OrderEntryService : IOrderEntryService
 
         return (await BuildOrderResponse(order.OrderId))!;
     }
+
+    // A sale is created once, so the saved order id is its identity. Captures the actual initial status.
+    private async Task AuditOrderCreatedAsync(Order order, bool downpayment)
+    {
+        var target = OrderAudit.Target(order.OrderId, order.OrderNumber);
+        var branch = OrderAudit.AtBranch(await LocationNameAsync(order.LocationId), order.LocationId);
+        var kind = order.OrderType == "Institutional" ? "institutional" : "walk-in";
+        var paid = downpayment ? " with a GCash downpayment" : string.Empty;
+        await _auditLogService.RecordAsync(new AuditEvent
+        {
+            Module = PosModules.SalesProcessing,
+            Action = AuditActions.Created,
+            Target = target,
+            Describe = who => $"{who} created {kind} {target.DisplayName}{branch}{paid} ({order.OrderStatus}).",
+            OccurredAt = order.CreatedAt,
+            OperationId = $"order-created:{order.OrderId}",
+            Metadata = new Dictionary<string, object?>
+            {
+                ["operation"] = "order_created",
+                ["location_id"] = order.LocationId,
+                ["order_type"] = order.OrderType,
+                ["new_status"] = order.OrderStatus,
+                ["payment_status"] = order.PaymentStatus,
+                ["downpayment"] = downpayment ? true : null,
+            },
+        });
+    }
+
+    private async Task<string?> LocationNameAsync(int? locationId) =>
+        locationId.HasValue
+            ? await _db.Locations.AsNoTracking()
+                .Where(l => l.LocationId == locationId.Value)
+                .Select(l => l.LocationName)
+                .FirstOrDefaultAsync()
+            : null;
 
     private static decimal? ParseVariationWeightKg(string variationName)
     {

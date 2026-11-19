@@ -12,6 +12,6 @@ public interface ILocationService
     Task<List<UserLocationResponseDto>> GetAllUserLocationsAsync();
     Task<List<UserLocationResponseDto>> GetUserLocationsAsync(string authUserId);
     Task<LocationResponseDto?> GetLocationForAssignmentAsync(int locationId);
-    Task<UserLocationResponseDto> AssignUserLocationAsync(AssignUserLocationDto dto);
+    Task<UserLocationResponseDto> AssignUserLocationAsync(AssignUserLocationDto dto, string? staffDisplayName = null);
     Task<bool> UnassignUserLocationAsync(int id);
 }

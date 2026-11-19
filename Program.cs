@@ -93,8 +93,9 @@ builder.Services.AddScoped<ICrmsQueryService, CrmsQueryService>();
 builder.Services.AddScoped<IXenditService, XenditService>();
 
 builder.Services.AddScoped<IRefundNotificationService, RefundNotificationService>(); // US-POS-025
-builder.Services.AddScoped<IAuditLogService, AuditLogService>(); // US-POS-027
-builder.Services.AddScoped<AuditLogClient>(); // US-POS-027
+// US-POS-027: POS audit events go through the shared API gateway (see "Shared audit" below).
+builder.Services.AddScoped<IAuditLogService, AuditLogService>();
+builder.Services.AddSingleton<IAuditWriter, AuditLogClient>();
 
 // E-Commerce Module 4
 builder.Services.AddScoped<ICustomerPortalService, CustomerPortalService>();
@@ -139,14 +140,14 @@ builder.Services.AddHttpClient("XenditClient", client =>
         new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", base64Key);
 });
 
-// Shared Audit service client (US-POS-027)
-var auditServiceUrl = Environment.GetEnvironmentVariable("AUDIT_SERVICE_URL");
-if (string.IsNullOrWhiteSpace(auditServiceUrl))
-    auditServiceUrl = "http://api-audit-logs:5000/";
-builder.Services.AddHttpClient("AuditService", client =>
+// Shared audit (US-POS-027): POST {POS_GATEWAY_URL}/audit/events with the "pos" Caller key.
+// AUDIT_SERVICE_ENABLED=false (the default) means zero outbound calls. Enabled with incomplete
+// settings logs a warning below and stays off, so POS keeps serving requests.
+var auditOptions = Applications.Audit.AuditDeliveryOptions.FromEnvironment(Environment.GetEnvironmentVariable);
+builder.Services.AddSingleton(auditOptions);
+builder.Services.AddHttpClient(AuditLogClient.HttpClientName, client =>
 {
-    client.BaseAddress = new Uri(auditServiceUrl);
-    client.Timeout     = TimeSpan.FromSeconds(5);
+    client.Timeout = auditOptions.Timeout;
 });
 
 // ── Database ──
@@ -215,6 +216,15 @@ if (authEnabled)
 }
 
 var app = builder.Build();
+
+if (auditOptions.Requested && !auditOptions.IsComplete)
+{
+    app.Logger.LogWarning(
+        "{Enabled}=true but {Url} or {Key} is missing or invalid; POS audit delivery stays off.",
+        Applications.Audit.AuditDeliveryOptions.EnabledVariable,
+        Applications.Audit.AuditDeliveryOptions.GatewayUrlVariable,
+        Applications.Audit.AuditDeliveryOptions.CallerKeyVariable);
+}
 
 // ── Auto-run migrations & seed data ──
 // Set RUN_DB_MIGRATIONS=true on first deploy (and whenever new migrations ship)
