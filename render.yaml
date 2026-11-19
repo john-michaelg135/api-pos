@@ -1,6 +1,13 @@
 # Render Blueprint for api-pos (.NET 10 API)
 # Deploy: push this repo to GitHub, then in Render → New → Blueprint, pick this repo.
-# Values marked `sync: false` are NOT in Git — set them in the Render dashboard.
+#
+# Two kinds of variables:
+#   value: "..."  Fixed in Git. Every Blueprint sync (any commit that changes this
+#                 file) resets the service to this value, overwriting dashboard edits.
+#   sync: false   Owned by the Render dashboard. Render asks for it when the Blueprint
+#                 is first created and never changes it afterwards. Use this for
+#                 secrets, URLs and switches that differ per deployment.
+# Never give a dashboard-managed variable a `value:` here, or the next sync wipes it.
 services:
   - type: web
     name: api-pos
@@ -15,8 +22,14 @@ services:
     healthCheckPath: /health
     autoDeploy: true
     envVars:
+      # ── Fixed settings (kept in Git) ──
       - key: ASPNETCORE_ENVIRONMENT
         value: Production
+      # Run EF migrations + seed on boot; safe to leave true.
+      - key: RUN_DB_MIGRATIONS
+        value: "true"
+      - key: PORTAL_SYSTEM_NAME
+        value: POS
 
       # ── PostgreSQL (Neon) ──
       # Single connection string. SSL is enforced automatically for remote hosts.
@@ -27,30 +40,20 @@ services:
       - key: DATABASE_URL
         sync: false
 
-      # Run EF migrations + seed on boot. Keep true for the first deploy so the
-      # schema is created; safe to leave true afterwards.
-      - key: RUN_DB_MIGRATIONS
-        value: "true"
-
       # ── Auth (Centralized Auth Service, owned by another team) ──
-      # Starts DISABLED so the backend can deploy and run migrations without the
-      # auth service URL or the frontend in place. When you have the production
-      # legacy auth URL, set AUTH_MIDDLEWARE_ENABLED=true and fill JWT_AUTHORITY, then
-      # redeploy. With it true, JwtBearer validates every request's token against
-      # JWT_AUTHORITY's OIDC keys and legacy bearer RBAC is enforced. Location
-      # APIs separately require Enterprise Portal session validation.
+      # "true" makes JwtBearer validate every request's token against JWT_AUTHORITY's
+      # OIDC keys. Unset or "false" = off. JWT_AUTHORITY is the Auth Service's public
+      # HTTPS root, e.g. https://auth.example.com. Location APIs separately require
+      # Enterprise Portal session validation.
       - key: AUTH_MIDDLEWARE_ENABLED
-        value: "false"
-      # Public HTTPS root of the Auth Service. Example: https://auth.example.com
-      # Fill this in (and flip the flag above) when auth is ready.
+        sync: false
       - key: JWT_AUTHORITY
-        value: ""
+        sync: false
 
-      # ── Enterprise Portal session validation (POS location APIs) ──
+      # ── Enterprise Portal session validation ──
+      # PORTAL_URL: the Portal's public origin, e.g. https://br-auth-three.vercel.app
       - key: PORTAL_URL
-        value: https://br-auth-three.vercel.app
-      - key: PORTAL_SYSTEM_NAME
-        value: POS
+        sync: false
       - key: PORTAL_SYSTEM_SECRET
         sync: false
       # Read-only credential for listing active POS users from the Portal database.
@@ -58,17 +61,16 @@ services:
         sync: false
 
       # ── CORS ──
-      # Public origin of the deployed web-pos (Vercel). No trailing slash.
-      # Set after the frontend is deployed, then redeploy.
+      # Public origin(s) of the deployed web-pos, comma-separated, no trailing slash.
       - key: WEB_POS_URL
-        value: ""
+        sync: false
 
-      # ── SCMS integration (owned by another team; optional for POS demo) ──
-      # Left blank on purpose; the app falls back to a default and works without it.
+      # ── SCMS integration (owned by another team) ──
+      # SCMS_API_BASE_URL, e.g. https://br-sims.vercel.app (unset = local placeholder).
       - key: SCMS_API_BASE_URL
-        value: "https://br-sims.vercel.app"
+        sync: false
       # Key SCMS gave POS; sent as "Authorization: Bearer <key>" on every call to SCMS
-      # (receive confirmations, status updates). Set it in the dashboard.
+      # (receive confirmations, status updates).
       - key: SCMS_API_KEY
         sync: false
       # Shared secret SCMS sends as "Authorization: Bearer <key>" on the routes it calls
@@ -78,22 +80,23 @@ services:
         sync: false
 
       # ── Audit logs (shared API gateway, "pos" Caller) ──
-      # Rollout switch. "false" means zero outbound audit calls; set it back to
-      # "false" and redeploy to stop delivery. Enable after the staging smoke test.
+      # AUDIT_SERVICE_ENABLED: rollout switch. Unset or "false" = zero outbound audit
+      # calls; set "false" and redeploy to stop delivery.
+      # POS_GATEWAY_URL: gateway origin, no trailing slash ({POS_GATEWAY_URL}/audit/events).
+      # POS_GATEWAY_CALLER_KEY: server-only key the gateway owners issued for "pos".
       - key: AUDIT_SERVICE_ENABLED
-        value: "false"
-      # Gateway origin, no trailing slash. Events go to {POS_GATEWAY_URL}/audit/events.
+        sync: false
       - key: POS_GATEWAY_URL
-        value: ""
-      # Server-only Caller key the gateway owners issued for "pos". Set it in the dashboard.
+        sync: false
       - key: POS_GATEWAY_CALLER_KEY
+        sync: false
+
+      # ── Rate limiting ──
+      # Unset or "true" = on (blocks duplicate submissions); "false" = off.
+      - key: RATE_LIMIT_ENABLED
         sync: false
 
       # ── Payments (Xendit) ──
       # Deferred: payment configuration is intentionally omitted from this
       # deployment. Add XENDIT_SECRET_KEY / XENDIT_PUBLIC_KEY / XENDIT_CALLBACK_TOKEN
       # / XENDIT_REDIRECT_URL later when the payment feature is enabled.
-
-      # ── Rate limiting ──
-      - key: RATE_LIMIT_ENABLED
-        value: "true"
