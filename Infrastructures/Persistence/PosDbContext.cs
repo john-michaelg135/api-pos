@@ -369,10 +369,12 @@ public class PosDbContext : DbContext
             entity.Property(e => e.DeliveredAt).IsRequired();
             entity.Property(e => e.CourierReference).HasMaxLength(500);
             entity.Property(e => e.ProofImage).HasColumnType("text");
+            entity.Property(e => e.ProofFileId).HasColumnType("uuid");
             entity.Property(e => e.Notes).HasColumnType("text");
             entity.Property(e => e.ConfirmedByName).HasMaxLength(150);
             entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
             entity.HasIndex(e => e.OrderId).IsUnique();
+            entity.HasIndex(e => e.ProofFileId).IsUnique();
 
             entity.HasOne(e => e.Order)
                 .WithMany()
@@ -384,11 +386,36 @@ public class PosDbContext : DbContext
         {
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Id).UseIdentityByDefaultColumn();
-            entity.Property(e => e.ProofImage).IsRequired().HasColumnType("text");
+            // Nullable since proof photos moved to file storage: a new row holds a File ID alone.
+            entity.Property(e => e.ProofImage).HasColumnType("text");
+            entity.Property(e => e.ProofFileId).HasColumnType("uuid");
             entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
             entity.HasIndex(e => e.OrderId).IsUnique();
+            entity.HasIndex(e => e.ProofFileId).IsUnique();
 
             entity.HasOne(e => e.Order)
+                .WithMany()
+                .HasForeignKey(e => e.OrderId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ProofFileTask>(entity =>
+        {
+            entity.ToTable("ProofFileTasks");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).UseIdentityByDefaultColumn();
+            entity.Property(e => e.Kind).IsRequired().HasMaxLength(20);
+            entity.Property(e => e.FileId).IsRequired().HasColumnType("uuid");
+            entity.Property(e => e.Stage).IsRequired().HasMaxLength(20);
+            entity.Property(e => e.LastError).HasMaxLength(200);
+            entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.Property(e => e.UpdatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
+            // One task per File: a second save of the same upload reference fails this constraint.
+            entity.HasIndex(e => e.FileId).IsUnique();
+            entity.HasIndex(e => new { e.Stage, e.NextAttemptAt });
+            entity.HasIndex(e => new { e.OrderId, e.Kind });
+
+            entity.HasOne<Order>()
                 .WithMany()
                 .HasForeignKey(e => e.OrderId)
                 .OnDelete(DeleteBehavior.Cascade);
@@ -465,6 +492,7 @@ public class PosDbContext : DbContext
     public DbSet<OrderStatusHistory> OrderStatusHistories { get; set; }
     public DbSet<OrderDeliveryConfirmation> OrderDeliveryConfirmations { get; set; }
     public DbSet<OrderRefundProof> OrderRefundProofs { get; set; }
+    public DbSet<ProofFileTask> ProofFileTasks { get; set; }
     public DbSet<PosUserPin> PosUserPins { get; set; }
     public DbSet<PosStaffUser> PosStaffUsers { get; set; }
     public DbSet<StartingCash> StartingCashEntries { get; set; }

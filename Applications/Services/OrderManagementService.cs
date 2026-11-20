@@ -8,6 +8,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Http;
 using Api.Middlewares;
 using Applications.Audit;
+using Applications.ProofFiles;
+using Microsoft.Extensions.Logging;
 
 namespace Applications.Services;
 
@@ -18,14 +20,23 @@ public class OrderManagementService : IOrderManagementService
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly IAuditLogService _auditLogService;
     private readonly IPosStaffIdentity _staff;
+    private readonly IProofUploadService? _proofUploads;
+    private readonly IProofFileFinalizer? _proofFinalizer;
+    private readonly IFileStorage? _fileStorage;
+    private readonly ILogger<OrderManagementService> _logger;
 
-    public OrderManagementService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor, IAuditLogService auditLogService, IPosStaffIdentity staff)
+    public OrderManagementService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor, IAuditLogService auditLogService, IPosStaffIdentity staff,
+        IProofUploadService? proofUploads = null, IProofFileFinalizer? proofFinalizer = null, IFileStorage? fileStorage = null, ILogger<OrderManagementService>? logger = null)
     {
         _db = db;
         _staff = staff;
         _inventoryService = inventoryService;
         _httpContextAccessor = httpContextAccessor;
         _auditLogService = auditLogService;
+        _proofUploads = proofUploads;
+        _proofFinalizer = proofFinalizer;
+        _fileStorage = fileStorage;
+        _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<OrderManagementService>.Instance;
     }
 
     // ────────────────────────────────────────────────────
@@ -340,6 +351,11 @@ public class OrderManagementService : IOrderManagementService
         if (currentUser != null && !PosRoleAuthorization.IsManager(currentUser))
             throw new InvalidOperationException("Only Order Managers and Admins can confirm deliveries.");
 
+        var proof = ResolveProof(order.OrderId, ProofKinds.Delivery, dto.ProofImage, dto.ProofReference);
+        // A resubmission of a save that already committed (lost response, double click) changes nothing.
+        if (proof.Reference is { } resent && await ProofAlreadySavedAsync(order.OrderId, ProofKinds.Delivery, resent.FileId))
+            return await ReloadResponseAsync(order.OrderId);
+
         if (order.OrderType != "Institutional")
             throw new InvalidOperationException($"Order {order.OrderNumber} is not an institutional order.");
 
@@ -379,8 +395,6 @@ public class OrderManagementService : IOrderManagementService
         if (notes?.Length > 1000)
             throw new InvalidOperationException("Notes must not exceed 1000 characters.");
 
-        var proofImage = NormalizeProofImage(dto.ProofImage);
-
         var confirmedByName = currentUser?.DisplayName ?? currentUser?.Username;
         var confirmation = new OrderDeliveryConfirmation
         {
@@ -388,7 +402,8 @@ public class OrderManagementService : IOrderManagementService
             ReceivedBy       = receivedBy,
             DeliveredAt      = deliveredAt,
             CourierReference = courierReference,
-            ProofImage       = proofImage,
+            ProofImage       = proof.Image,
+            ProofFileId      = proof.Reference?.FileId,
             Notes            = notes,
             ConfirmedBy      = dto.ConfirmedBy,
             ConfirmedByName  = string.IsNullOrWhiteSpace(confirmedByName) ? null : confirmedByName,
@@ -418,25 +433,149 @@ public class OrderManagementService : IOrderManagementService
         var history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Completed", dto.ConfirmedBy,
             $"Delivery confirmed{byWhom}. Received by {receivedBy}.");
 
+        // The File ID, its storage follow-up and the business change commit together.
+        var proofTask = proof.Reference is { } ticket ? await AddProofTaskAsync(order.OrderId, ProofKinds.Delivery, ticket, now) : null;
+
         _db.Orders.Update(order);
-        await _db.SaveChangesAsync();
+        if (!await TrySaveProofCommitAsync(proof.Reference, order.OrderId, ProofKinds.Delivery))
+            return await ReloadResponseAsync(order.OrderId);
         await AuditOrderAsync(order, history, "delivery_confirmed", "confirmed the delivery of");
 
         var response = MapToResponse(order);
         response.DeliveryConfirmation = MapDeliveryConfirmation(confirmation);
+        response.DeliveryConfirmation.ProofPending = proofTask != null && !await FinalizeProofAsync(proofTask);
         return response;
     }
 
-    public async Task<string?> GetDeliveryProofImageAsync(int orderId)
+    public async Task<ProofImageResult?> GetDeliveryProofImageAsync(int orderId)
     {
         var order = await _db.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
         EnsureCurrentUserCanAccessOrderLocation(order);
 
-        return await _db.OrderDeliveryConfirmations
+        var row = await _db.OrderDeliveryConfirmations.AsNoTracking()
             .Where(c => c.OrderId == orderId)
-            .Select(c => c.ProofImage)
+            .Select(c => new { c.ProofFileId, c.ProofImage })
             .FirstOrDefaultAsync();
+        return row == null ? null : await ResolveProofImageAsync(orderId, ProofKinds.Delivery, row.ProofFileId, row.ProofImage);
+    }
+
+    // ── Proof photos in the shared file-storage service ──
+
+    private sealed record ProofInput(string? Image, ProofReference? Reference);
+
+    // One representation per request: a legacy data URL, or a ready upload reference this user issued for this order.
+    private ProofInput ResolveProof(int orderId, string kind, string? image, string? reference)
+    {
+        var hasImage = !string.IsNullOrWhiteSpace(image);
+        var hasReference = !string.IsNullOrWhiteSpace(reference);
+        if (hasImage && hasReference)
+            throw new InvalidOperationException("Send the proof photo once: either the uploaded photo or the image, not both.");
+        if (!hasReference) return new ProofInput(NormalizeProofImage(image), null);
+        if (_proofUploads == null)
+            throw new InvalidOperationException("Photo uploads are not available right now. Attach the photo again later.");
+        return new ProofInput(null, _proofUploads.OpenReadyReference(orderId, kind, reference));
+    }
+
+    private Task<bool> ProofAlreadySavedAsync(int orderId, string kind, Guid fileId) =>
+        _db.ProofFileTasks.AsNoTracking().AnyAsync(t => t.FileId == fileId && t.OrderId == orderId && t.Kind == kind);
+
+    private async Task<ProofFileTask> AddProofTaskAsync(int orderId, string kind, ProofReference reference, DateTime now)
+    {
+        var task = new ProofFileTask
+        {
+            OrderId = orderId,
+            Kind = kind,
+            FileId = reference.FileId,
+            Stage = ProofFileTaskStages.Pending,
+            FileExpiresAt = reference.FileExpiresAt is { } expires ? DateTimeOffset.FromUnixTimeSeconds(expires).UtcDateTime : null,
+            NextAttemptAt = now,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+        await _db.ProofFileTasks.AddAsync(task);
+        return task;
+    }
+
+    // Commits the business change. False when a concurrent submission of the same upload reference won
+    // the race (unique File ID): nothing from this attempt is kept and the caller returns the saved result.
+    private async Task<bool> TrySaveProofCommitAsync(ProofReference? reference, int orderId, string kind)
+    {
+        try
+        {
+            await _db.SaveChangesAsync();
+            return true;
+        }
+        catch (DbUpdateException) when (reference != null)
+        {
+            _db.ChangeTracker.Clear();
+            if (await ProofAlreadySavedAsync(orderId, kind, reference.FileId)) return false;
+            throw;
+        }
+    }
+
+    // Links and promotes the File right away when storage answers; otherwise the background sweep retries.
+    private async Task<bool> FinalizeProofAsync(ProofFileTask task)
+    {
+        if (_proofFinalizer == null) return false;
+        try
+        {
+            return await _proofFinalizer.RunAsync(task.Id) == ProofFileTaskStages.Done;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Attaching proof File {FileId} for order {OrderId} will be retried.", task.FileId, task.OrderId);
+            return false;
+        }
+    }
+
+    private async Task<ProofImageResult?> ResolveProofImageAsync(int orderId, string kind, Guid? fileId, string? legacyImage)
+    {
+        if (fileId is not { } id)
+            return string.IsNullOrEmpty(legacyImage) ? null : new ProofImageResult(legacyImage, ProofImageResult.LegacySource, false);
+
+        if (_fileStorage == null)
+            throw new ProofImageUnavailableException(StatusCodes.Status503ServiceUnavailable, "Photo storage is temporarily unavailable. Please try again.");
+
+        var pending = await _db.ProofFileTasks.AsNoTracking().AnyAsync(t => t.OrderId == orderId && t.Kind == kind && t.FileId == id &&
+            (t.Stage == ProofFileTaskStages.Pending || t.Stage == ProofFileTaskStages.Linked));
+        try
+        {
+            var viewed = await _fileStorage.ViewAsync(id);
+            var url = FileStorageValues.SafeStorageUrl(viewed.Url);
+            if (viewed.Id != id || viewed.Status != FileStorageValues.Active || url == null)
+                throw new FileStorageException(null, "Storage returned no usable view address.");
+            return new ProofImageResult(url.ToString(), ProofImageResult.FileSource, pending);
+        }
+        catch (FileStorageException ex) when (ex.Status == StatusCodes.Status404NotFound)
+        {
+            _logger.LogError("Proof File {FileId} saved on order {OrderId} ({Kind}) is missing from storage.", id, orderId, kind);
+            throw new ProofImageUnavailableException(StatusCodes.Status404NotFound, "The saved proof photo is no longer available.");
+        }
+        catch (FileStorageException ex)
+        {
+            _logger.LogWarning("Viewing proof File {FileId} for order {OrderId} failed: storage status {Status}.", id, orderId, ex.Status?.ToString() ?? "unreachable");
+            throw new ProofImageUnavailableException(StatusCodes.Status503ServiceUnavailable, "Photo storage is temporarily unavailable. Please try again.");
+        }
+    }
+
+    // The order as the screen sees it, from what is committed now.
+    private async Task<OrderManagementResponseDto?> ReloadResponseAsync(int orderId)
+    {
+        _db.ChangeTracker.Clear();
+        var order = await _db.Orders
+            .AsNoTracking()
+            .Include(o => o.OrderItems)
+                .ThenInclude(oi => oi.ProductVariation)
+                    .ThenInclude(v => v.Product)
+            .Include(o => o.Payments)
+            .Include(o => o.Location)
+            .Include(o => o.StatusHistory)
+            .FirstOrDefaultAsync(o => o.OrderId == orderId);
+        if (order == null) return null;
+        var response = new List<OrderManagementResponseDto> { MapToResponse(order) };
+        await AttachDeliveryConfirmationsAsync(response);
+        return response[0];
     }
 
     // Adds delivery confirmations (without the photo) to a page of orders in one query.
@@ -452,16 +591,17 @@ public class OrderManagementService : IOrderManagementService
         return image;
     }
 
-    public async Task<string?> GetRefundProofImageAsync(int orderId)
+    public async Task<ProofImageResult?> GetRefundProofImageAsync(int orderId)
     {
         var order = await _db.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.OrderId == orderId);
         if (order == null) return null;
         EnsureCurrentUserCanAccessOrderLocation(order);
 
-        return await _db.OrderRefundProofs
+        var row = await _db.OrderRefundProofs.AsNoTracking()
             .Where(p => p.OrderId == orderId)
-            .Select(p => p.ProofImage)
+            .Select(p => new { p.ProofFileId, p.ProofImage })
             .FirstOrDefaultAsync();
+        return row == null ? null : await ResolveProofImageAsync(orderId, ProofKinds.Refund, row.ProofFileId, row.ProofImage);
     }
 
     // Adds delivery confirmations and refund-proof flags (never the photos) to a page of orders.
@@ -519,13 +659,25 @@ public class OrderManagementService : IOrderManagementService
         var orderIds = orders.Select(o => o.OrderId).ToList();
         if (orderIds.Count == 0) return;
 
+        // Flags only: photo bytes and signed addresses never go into lists.
         var withRefundProof = (await _db.OrderRefundProofs
             .AsNoTracking()
-            .Where(p => orderIds.Contains(p.OrderId))
+            .Where(p => orderIds.Contains(p.OrderId) && (p.ProofFileId != null || p.ProofImage != null))
             .Select(p => p.OrderId)
             .ToListAsync()).ToHashSet();
+        var attaching = (await _db.ProofFileTasks
+            .AsNoTracking()
+            .Where(t => orderIds.Contains(t.OrderId) &&
+                        (t.Stage == ProofFileTaskStages.Pending || t.Stage == ProofFileTaskStages.Linked))
+            .Select(t => new { t.OrderId, t.Kind })
+            .ToListAsync())
+            .Select(t => (t.OrderId, t.Kind))
+            .ToHashSet();
         foreach (var order in orders)
+        {
             order.HasRefundProof = withRefundProof.Contains(order.OrderId);
+            order.RefundProofPending = order.HasRefundProof && attaching.Contains((order.OrderId, ProofKinds.Refund));
+        }
 
         await AttachRefundQuantitiesAsync(orders, orderIds);
 
@@ -564,7 +716,7 @@ public class OrderManagementService : IOrderManagementService
                     DeliveredAt      = c.DeliveredAt,
                     CourierReference = c.CourierReference,
                     Notes            = c.Notes,
-                    HasProofImage    = c.ProofImage != null,
+                    HasProofImage    = c.ProofImage != null || c.ProofFileId != null,
                     ConfirmedBy      = c.ConfirmedBy,
                     ConfirmedByName  = c.ConfirmedByName,
                     ConfirmedAt      = c.CreatedAt
@@ -575,7 +727,10 @@ public class OrderManagementService : IOrderManagementService
         foreach (var order in orders)
         {
             if (confirmations.TryGetValue(order.OrderId, out var confirmation))
+            {
+                confirmation.ProofPending = confirmation.HasProofImage && attaching.Contains((order.OrderId, ProofKinds.Delivery));
                 order.DeliveryConfirmation = confirmation;
+            }
 
             // Same rule the refund request enforces, so the screen can show it.
             var deadline = RefundPolicy.DeadlineUtc(order.OrderType, RefundPolicy.WindowStartUtc(
@@ -593,7 +748,7 @@ public class OrderManagementService : IOrderManagementService
         DeliveredAt      = c.DeliveredAt,
         CourierReference = c.CourierReference,
         Notes            = c.Notes,
-        HasProofImage    = c.ProofImage != null,
+        HasProofImage    = c.ProofImage != null || c.ProofFileId != null,
         ConfirmedBy      = c.ConfirmedBy,
         ConfirmedByName  = c.ConfirmedByName,
         ConfirmedAt      = c.CreatedAt
@@ -881,7 +1036,7 @@ public class OrderManagementService : IOrderManagementService
 
     private const string FailedDeliveryReason = "Item not delivered";
 
-    public async Task<OrderManagementResponseDto?> RequestRefundAsync(int orderId, string reason, string? proofImage, IReadOnlyList<RefundItemDto>? items = null)
+    public async Task<OrderManagementResponseDto?> RequestRefundAsync(int orderId, string reason, string? proofImage, IReadOnlyList<RefundItemDto>? items = null, string? proofReference = null)
     {
         var order = await _db.Orders
             .Include(o => o.OrderItems)
@@ -898,6 +1053,11 @@ public class OrderManagementService : IOrderManagementService
         if (currentUser?.SubRole == "Cashier" && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
             throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
 
+        var proof = ResolveProof(order.OrderId, ProofKinds.Refund, proofImage, proofReference);
+        // A resubmission of a request that already committed (lost response, double click) changes nothing.
+        if (proof.Reference is { } resent && await ProofAlreadySavedAsync(order.OrderId, ProofKinds.Refund, resent.FileId))
+            return await ReloadResponseAsync(order.OrderId);
+
         if (order.OrderStatus == "Refund Requested")
             throw new InvalidOperationException($"Order {order.OrderNumber} already has a refund request waiting for a manager.");
 
@@ -912,7 +1072,7 @@ public class OrderManagementService : IOrderManagementService
         if (order.PaymentStatus == "Partial")
             throw new InvalidOperationException($"Order {order.OrderNumber} still has an unpaid balance. Complete the remaining GCash payment before requesting a refund.");
 
-        var image = NormalizeProofImage(proofImage);
+        var hasProof = proof.Image != null || proof.Reference != null;
         var isPaidInstitutional = order.OrderType == "Institutional" &&
             (string.Equals(order.PaymentMethod, "Cash", StringComparison.OrdinalIgnoreCase) ||
              string.Equals(order.PaymentMethod, "GCash", StringComparison.OrdinalIgnoreCase));
@@ -932,7 +1092,8 @@ public class OrderManagementService : IOrderManagementService
         // Paid institutional customers can only ask for a refund once the order is delivered.
         if (isPaidInstitutional && !isFailedDelivery && !isDeliveredInstitutional)
             throw new InvalidOperationException($"Order {order.OrderNumber} hasn't been delivered yet. Paid institutional orders can only be refunded after delivery is confirmed.");
-        if ((isPaidInstitutional || isFailedDelivery) && image == null)
+        // Required proof must come with this request, never from an earlier rejected one.
+        if ((isPaidInstitutional || isFailedDelivery) && !hasProof)
             throw new InvalidOperationException(isFailedDelivery
                 ? "Attach proof that the item wasn't delivered (e.g. Lalamove's failed-delivery screen)."
                 : "Attach a photo as proof for refunds on paid institutional orders.");
@@ -957,22 +1118,36 @@ public class OrderManagementService : IOrderManagementService
         // Which items come back, and how many. A failed delivery always returns everything.
         var lines = await ResolveRefundLinesAsync(order, isFailedDelivery ? null : items);
 
-        if (image != null)
+        var now = DateTime.UtcNow;
+        ProofFileTask? proofTask = null;
+        if (hasProof)
         {
-            // A new request after a rejection replaces the earlier photo.
+            // A new request after a rejection replaces the earlier photo, in this same commit.
             var existing = await _db.OrderRefundProofs.FirstOrDefaultAsync(p => p.OrderId == order.OrderId);
-            if (existing != null)
+            if (existing == null)
             {
-                existing.ProofImage = image;
-                existing.CreatedAt = DateTime.UtcNow;
+                existing = new OrderRefundProof { OrderId = order.OrderId };
+                await _db.OrderRefundProofs.AddAsync(existing);
             }
-            else
+            else if (existing.ProofFileId is { } superseded && superseded != proof.Reference?.FileId)
             {
-                await _db.OrderRefundProofs.AddAsync(new OrderRefundProof { OrderId = order.OrderId, ProofImage = image, CreatedAt = DateTime.UtcNow });
+                // Retire the older File's order link once the new photo is attached (exact unlink, never delete).
+                var oldTask = await _db.ProofFileTasks.FirstOrDefaultAsync(t => t.FileId == superseded);
+                if (oldTask != null && oldTask.Stage is not (ProofFileTaskStages.Retired or ProofFileTaskStages.Expired))
+                {
+                    oldTask.Stage = ProofFileTaskStages.Detach;
+                    oldTask.NextAttemptAt = now;
+                    oldTask.UpdatedAt = now;
+                }
             }
+            existing.ProofImage = proof.Image;
+            existing.ProofFileId = proof.Reference?.FileId;
+            existing.CreatedAt = now;
+
+            if (proof.Reference is { } ticket)
+                proofTask = await AddProofTaskAsync(order.OrderId, ProofKinds.Refund, ticket, now);
         }
 
-        var now = DateTime.UtcNow;
         var trimmedReason = reason.Trim();
         var requestedBy = await _staff.CurrentStaffIdAsync() ?? 0;
         foreach (var line in lines)
@@ -1008,12 +1183,16 @@ public class OrderManagementService : IOrderManagementService
         var history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Refund Requested", 1,
             $"{trimmedReason} ({DescribeRefundLines(order, lines)})");
         _db.Orders.Update(order);
-        await _db.SaveChangesAsync();
+        if (!await TrySaveProofCommitAsync(proof.Reference, order.OrderId, ProofKinds.Refund))
+            return await ReloadResponseAsync(order.OrderId);
         await AuditOrderAsync(order, history, "refund_requested",
             requestIsPartial ? "requested a partial refund for" : "requested a full refund for",
             partial: requestIsPartial);
 
-        return MapToResponse(order);
+        var response = MapToResponse(order);
+        response.HasRefundProof = hasProof || await _db.OrderRefundProofs.AnyAsync(p => p.OrderId == order.OrderId);
+        response.RefundProofPending = proofTask != null && !await FinalizeProofAsync(proofTask);
+        return response;
     }
 
     private sealed record RefundLine(int VariationId, int Quantity);

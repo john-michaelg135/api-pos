@@ -150,6 +150,25 @@ builder.Services.AddHttpClient(AuditLogClient.HttpClientName, client =>
     client.Timeout = auditOptions.Timeout;
 });
 
+// Proof photos (delivery and refund) in the shared file-storage service, through the same gateway
+// "pos" Caller. POS_UPLOAD_SIGNING_SECRET signs upload references. Incomplete settings turn new
+// uploads off (503); saved legacy photos stay readable.
+var proofStorageOptions = Applications.ProofFiles.ProofStorageOptions.FromEnvironment(Environment.GetEnvironmentVariable);
+builder.Services.AddSingleton(proofStorageOptions);
+builder.Services.AddHttpClient(FileStorageClient.GatewayClientName, client =>
+{
+    // Per-call deadlines come from ProofStorageOptions; this is only an outer bound.
+    client.Timeout = proofStorageOptions.Timeout + TimeSpan.FromSeconds(5);
+});
+builder.Services.AddHttpClient(FileStorageClient.SignedReadClientName, client =>
+{
+    client.Timeout = proofStorageOptions.ReadTimeout + TimeSpan.FromSeconds(5);
+}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false });
+builder.Services.AddSingleton<Applications.ProofFiles.IFileStorage, FileStorageClient>();
+builder.Services.AddScoped<Applications.ProofFiles.IProofUploadService, Applications.ProofFiles.ProofUploadService>();
+builder.Services.AddScoped<Applications.ProofFiles.IProofFileFinalizer, Applications.ProofFiles.ProofFileFinalizer>();
+builder.Services.AddHostedService<Applications.ProofFiles.ProofFileFinalizerBackgroundService>();
+
 // ── Database ──
 // Supports a single DATABASE_URL (Neon / Render managed Postgres, SSL enforced)
 // or the split POSTGRES_* vars for local docker. See ConnectionStringFactory.
@@ -224,6 +243,16 @@ if (auditOptions.Requested && !auditOptions.IsComplete)
         Applications.Audit.AuditDeliveryOptions.EnabledVariable,
         Applications.Audit.AuditDeliveryOptions.GatewayUrlVariable,
         Applications.Audit.AuditDeliveryOptions.CallerKeyVariable);
+}
+
+if (!proofStorageOptions.UploadsEnabled)
+{
+    app.Logger.LogWarning(
+        "{Url}, {Key} or {Secret} (at least {Bytes} bytes) is missing or invalid; new proof photo uploads are off.",
+        Applications.ProofFiles.ProofStorageOptions.GatewayUrlVariable,
+        Applications.ProofFiles.ProofStorageOptions.CallerKeyVariable,
+        Applications.ProofFiles.ProofStorageOptions.SigningSecretVariable,
+        Applications.ProofFiles.ProofStorageOptions.MinSigningSecretBytes);
 }
 
 // ── Auto-run migrations & seed data ──

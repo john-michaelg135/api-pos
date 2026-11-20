@@ -9,6 +9,8 @@ public class DeliveryConfirmationResponseDto
     public string? CourierReference { get; set; }
     public string? Notes { get; set; }
     public bool HasProofImage { get; set; }
+    // Saved, but file storage hasn't finished attaching it yet (retried automatically).
+    public bool ProofPending { get; set; }
     public int? ConfirmedBy { get; set; }
     public string? ConfirmedByName { get; set; }
     public DateTime ConfirmedAt { get; set; }

@@ -130,16 +130,62 @@ public class OrderManagementController : ControllerBase
     }
 
     // GET api-pos/order-management/orders/{orderId}/delivery-proof
+    // A stored File answers with a fresh five-minute signed address; call again when it expires.
     [HttpGet("orders/{orderId:int}/delivery-proof")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> GetDeliveryProof(int orderId)
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    public Task<IActionResult> GetDeliveryProof(int orderId) =>
+        ProofImageAsync(() => _orderManagementService.GetDeliveryProofImageAsync(orderId), "No proof photo for this order.");
+
+    // ── Proof photo uploads (shared file-storage service) ──
+    // 1. POST .../proof-uploads/{kind}         → signed upload address + pending reference
+    // 2. Browser PUTs the JPEG straight to the signed address (no credentials)
+    // 3. POST .../proof-uploads/{kind}/confirm → ready reference, sent as proofReference with the save
+
+    // POST api-pos/order-management/orders/{orderId}/proof-uploads/{kind}   (kind: delivery | refund)
+    [HttpPost("orders/{orderId:int}/proof-uploads/{kind}")]
+    [RateLimit(WindowSeconds = 10, MaxRequests = 5, Message = "Too many photo uploads. Wait a moment and try again.")]
+    [ProducesResponseType(typeof(ProofUploadStartedDto), StatusCodes.Status201Created)]
+    public Task<IActionResult> StartProofUpload(int orderId, string kind, [FromBody] ProofUploadRequestDto dto,
+        [FromServices] Applications.ProofFiles.IProofUploadService uploads) =>
+        ProofUploadAsync(async () => StatusCode(StatusCodes.Status201Created,
+            await uploads.StartAsync(orderId, kind, dto ?? new ProofUploadRequestDto(), HttpContext.RequestAborted)));
+
+    // POST api-pos/order-management/orders/{orderId}/proof-uploads/{kind}/confirm
+    [HttpPost("orders/{orderId:int}/proof-uploads/{kind}/confirm")]
+    [RateLimit(WindowSeconds = 10, MaxRequests = 5, Message = "Too many photo confirmations. Wait a moment and try again.")]
+    [ProducesResponseType(typeof(ProofUploadReadyDto), StatusCodes.Status200OK)]
+    public Task<IActionResult> ConfirmProofUpload(int orderId, string kind, [FromBody] ProofUploadConfirmDto dto,
+        [FromServices] Applications.ProofFiles.IProofUploadService uploads) =>
+        ProofUploadAsync(async () => Ok(await uploads.ConfirmAsync(orderId, kind, dto?.PendingReference, HttpContext.RequestAborted)));
+
+    private async Task<IActionResult> ProofUploadAsync(Func<Task<IActionResult>> run)
     {
+        Response.Headers.CacheControl = "no-store";
         try
         {
-            var image = await _orderManagementService.GetDeliveryProofImageAsync(orderId);
-            if (image == null) return NotFound("No proof photo for this order.");
-            return Ok(new { proofImage = image });
+            return await run();
+        }
+        catch (Applications.ProofFiles.ProofUploadException ex)
+        {
+            return StatusCode(ex.Status, new { message = ex.Message, cleanupFailed = ex.CleanupFailed });
+        }
+    }
+
+    private async Task<IActionResult> ProofImageAsync(Func<Task<ProofImageResult?>> load, string missing)
+    {
+        // Signed addresses and photos must not be cached by the browser or a proxy.
+        Response.Headers.CacheControl = "no-store";
+        try
+        {
+            var image = await load();
+            if (image == null) return NotFound(missing);
+            return Ok(new { proofImage = image.ProofImage, source = image.Source, pending = image.Pending });
+        }
+        catch (ProofImageUnavailableException ex)
+        {
+            return StatusCode(ex.Status, new { message = ex.Message, temporary = ex.Status == StatusCodes.Status503ServiceUnavailable });
         }
         catch (InvalidOperationException ex)
         {
@@ -216,7 +262,7 @@ public class OrderManagementController : ControllerBase
         if (dto == null || string.IsNullOrWhiteSpace(dto.Reason)) return BadRequest("Refund reason is required.");
         try
         {
-            var order = await _orderManagementService.RequestRefundAsync(orderId, dto.Reason, dto.ProofImage, dto.Items);
+            var order = await _orderManagementService.RequestRefundAsync(orderId, dto.Reason, dto.ProofImage, dto.Items, dto.ProofReference);
             if (order == null) return NotFound($"Order with ID {orderId} not found.");
             return Ok(order);
         }
@@ -230,19 +276,9 @@ public class OrderManagementController : ControllerBase
     [HttpGet("orders/{orderId:int}/refund-proof")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> GetRefundProof(int orderId)
-    {
-        try
-        {
-            var image = await _orderManagementService.GetRefundProofImageAsync(orderId);
-            if (image == null) return NotFound("No refund photo for this order.");
-            return Ok(new { proofImage = image });
-        }
-        catch (InvalidOperationException ex)
-        {
-            return BadRequest(ex.Message);
-        }
-    }
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    public Task<IActionResult> GetRefundProof(int orderId) =>
+        ProofImageAsync(() => _orderManagementService.GetRefundProofImageAsync(orderId), "No refund photo for this order.");
 
     // PUT api-pos/order-management/orders/{orderId}/approve-refund
     [HttpPut("orders/{orderId:int}/approve-refund")]
