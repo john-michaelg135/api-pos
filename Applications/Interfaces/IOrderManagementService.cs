@@ -2,6 +2,22 @@ using Api.Contracts.OrderManagement;
 
 namespace Applications.Interfaces;
 
+/// <summary>
+/// A proof photo ready for the viewer: a fresh five-minute signed HTTPS address for a stored File,
+/// or the saved data URL for a photo from before the move to file storage.
+/// </summary>
+public sealed record ProofImageResult(string ProofImage, string Source, bool Pending)
+{
+    public const string FileSource = "file";
+    public const string LegacySource = "legacy";
+}
+
+/// <summary>The order has a proof File, but storage can't hand out a view address right now (503) or lost it (404).</summary>
+public sealed class ProofImageUnavailableException(int status, string message) : Exception(message)
+{
+    public int Status { get; } = status;
+}
+
 public interface IOrderManagementService
 {
     // POS-013: Online order approval queue
@@ -17,7 +33,7 @@ public interface IOrderManagementService
 
     // Institutional: Shipped → Completed with proof of delivery
     Task<OrderManagementResponseDto?> ConfirmInstitutionalDeliveryAsync(int orderId, ConfirmInstitutionalDeliveryDto dto);
-    Task<string?> GetDeliveryProofImageAsync(int orderId);
+    Task<ProofImageResult?> GetDeliveryProofImageAsync(int orderId);
 
     // Generic order status update (Order Manager only)
     Task<OrderManagementResponseDto?> UpdateOrderStatusAsync(int orderId, UpdateOrderStatusDto dto);
@@ -27,8 +43,8 @@ public interface IOrderManagementService
     Task<OrderTrackingDto?> GetOrderTrackingAsync(int orderId);
 
     // POS-016 & 017: Refunds
-    Task<OrderManagementResponseDto?> RequestRefundAsync(int orderId, string reason, string? proofImage, IReadOnlyList<RefundItemDto>? items = null);
-    Task<string?> GetRefundProofImageAsync(int orderId);
+    Task<OrderManagementResponseDto?> RequestRefundAsync(int orderId, string reason, string? proofImage, IReadOnlyList<RefundItemDto>? items = null, string? proofReference = null);
+    Task<ProofImageResult?> GetRefundProofImageAsync(int orderId);
     Task<OrderManagementResponseDto?> ApproveRefundAsync(int orderId, int approvedBy, string? pinCode);
     Task<OrderManagementResponseDto?> RejectRefundAsync(int orderId, int rejectedBy, string reason, string? pinCode);
 

@@ -89,6 +89,12 @@ services:
       - key: POS_GATEWAY_CALLER_KEY
         sync: false
 
+      # Proof photos (shared file-storage service via the same gateway Caller).
+      # Server-only HMAC key for upload references, at least 32 random bytes
+      # (openssl rand -base64 48). Unset = new photo uploads stay off.
+      - key: POS_UPLOAD_SIGNING_SECRET
+        sync: false
+
       # ── Payments (Xendit) ──
       # Deferred: payment configuration is intentionally omitted from this
       # deployment. Add XENDIT_SECRET_KEY / XENDIT_PUBLIC_KEY / XENDIT_CALLBACK_TOKEN

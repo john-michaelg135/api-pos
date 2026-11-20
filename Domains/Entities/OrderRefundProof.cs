@@ -8,7 +8,8 @@ public class OrderRefundProof
 {
     public int Id { get; set; }
     public int OrderId { get; set; }
-    public string ProofImage { get; set; } = string.Empty; // Browser-shrunk image as a data URL
+    public string? ProofImage { get; set; }  // Legacy: browser-shrunk image as a data URL
+    public Guid? ProofFileId { get; set; }   // Private File in the shared file-storage service
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     // Navigation

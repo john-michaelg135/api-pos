@@ -273,6 +273,9 @@ namespace api_pos.Migrations
                     b.Property<int>("OrderId")
                         .HasColumnType("integer");
 
+                    b.Property<Guid?>("ProofFileId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("ProofImage")
                         .HasColumnType("text");
 
@@ -284,6 +287,9 @@ namespace api_pos.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("OrderId")
+                        .IsUnique();
+
+                    b.HasIndex("ProofFileId")
                         .IsUnique();
 
                     b.ToTable("OrderDeliveryConfirmations");
@@ -342,13 +348,18 @@ namespace api_pos.Migrations
                     b.Property<int>("OrderId")
                         .HasColumnType("integer");
 
+                    b.Property<Guid?>("ProofFileId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("ProofImage")
-                        .IsRequired()
                         .HasColumnType("text");
 
                     b.HasKey("Id");
 
                     b.HasIndex("OrderId")
+                        .IsUnique();
+
+                    b.HasIndex("ProofFileId")
                         .IsUnique();
 
                     b.ToTable("OrderRefundProofs");
@@ -699,6 +710,68 @@ namespace api_pos.Migrations
                         .HasFilter("\"Sku\" IS NOT NULL");
 
                     b.ToTable("ProductVariations");
+                });
+
+            modelBuilder.Entity("Domains.Entities.ProofFileTask", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<DateTime?>("FileExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("FileId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateTime>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("OrderId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Stage")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FileId")
+                        .IsUnique();
+
+                    b.HasIndex("OrderId", "Kind");
+
+                    b.HasIndex("Stage", "NextAttemptAt");
+
+                    b.ToTable("ProofFileTasks", (string)null);
                 });
 
             modelBuilder.Entity("Domains.Entities.RefundRequest", b =>
@@ -1254,6 +1327,15 @@ namespace api_pos.Migrations
                         .IsRequired();
 
                     b.Navigation("Product");
+                });
+
+            modelBuilder.Entity("Domains.Entities.ProofFileTask", b =>
+                {
+                    b.HasOne("Domains.Entities.Order", null)
+                        .WithMany()
+                        .HasForeignKey("OrderId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Domains.Entities.RefundRequest", b =>

@@ -51,6 +51,8 @@ public class OrderManagementResponseDto
     public DeliveryConfirmationResponseDto? DeliveryConfirmation { get; set; }
     // Photo itself is at GET orders/{orderId}/refund-proof.
     public bool HasRefundProof { get; set; }
+    // Saved, but file storage hasn't finished attaching the refund photo yet (retried automatically).
+    public bool RefundProofPending { get; set; }
 
     // Value of the items already refunded, and of the items in a refund request awaiting approval.
     public decimal RefundedAmount { get; set; }
