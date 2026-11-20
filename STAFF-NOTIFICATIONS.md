@@ -93,9 +93,9 @@ still see alerts in the POS bell, but they get no Portal copy.
    from new transitions only, and the POS bell works.
 2. Confirm the gateway mapping and the web-pos proxy allowlist for `/api-pos/notifications/*`.
    Then set `STAFF_ALERTS_ENABLED=true` and restart.
-3. The legacy `RefundService` still sends a SignalR `RefundApproved` to a location group. It only
-   runs on the old `/api-pos/refunds` route, not the Order Management screen. Retire that consumer
-   in web-pos when the bell ships, so the same refund never shows twice.
+3. The legacy `RefundService` still sends a SignalR `RefundApproved` to a location group, but only
+   on the old `/api-pos/refunds` route. web-pos has no listener for it, so the same refund never
+   shows twice.
 
 **Pause:** set `STAFF_ALERTS_ENABLED=false` and restart. Nothing goes out. Alerts keep being
 recorded and served in POS.
