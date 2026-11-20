@@ -65,6 +65,12 @@ public class CurrentUserContext
     /// </summary>
     public bool IsSuperUser { get; set; }
 
+    /// <summary>
+    /// Portal Modules the Enterprise Portal confirmed for this request's session (exact Portal names,
+    /// e.g. "Order Management"). The staff bell validates each bell Module; other routes validate one.
+    /// </summary>
+    public string[] PortalModules { get; set; } = Array.Empty<string>();
+
     /// <summary>Granular POS permissions per module (from the br-auth `permissions` claim).</summary>
     public Dictionary<string, ModulePermission> Permissions { get; set; } = new();
 

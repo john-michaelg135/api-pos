@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Http;
 using Api.Middlewares;
 using Applications.Audit;
 using Applications.ProofFiles;
+using Applications.StaffAlerts;
 using Microsoft.Extensions.Logging;
 
 namespace Applications.Services;
@@ -1182,6 +1183,8 @@ public class OrderManagementService : IOrderManagementService
 
         var history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Refund Requested", 1,
             $"{trimmedReason} ({DescribeRefundLines(order, lines)})");
+        // One alert for the request however many items it covers, saved with it.
+        RaiseOrderAlert(StaffAlertKinds.RefundRequested, order, history, CurrentPortalUserId(), requestIsPartial);
         _db.Orders.Update(order);
         if (!await TrySaveProofCommitAsync(proof.Reference, order.OrderId, ProofKinds.Refund))
             return await ReloadResponseAsync(order.OrderId);
@@ -1379,6 +1382,7 @@ public class OrderManagementService : IOrderManagementService
                           + pending.Where(r => r.VariationId == g.Key).Sum(r => r.QuantityToReturn)));
         var fullyRefunded = refundedAfter.Values.All(v => v.Refunded >= v.Bought);
         var summary = DescribeRefundLines(order, pending.Select(r => new RefundLine(r.VariationId, r.QuantityToReturn)));
+        var requester = await RequesterPortalIdAsync(orderId, "Refund Requested");
 
         var currentStatus = order.OrderStatus;
         OrderStatusHistory history;
@@ -1397,6 +1401,7 @@ public class OrderManagementService : IOrderManagementService
         }
         order.UpdatedAt = now;
         _db.Orders.Update(order);
+        RaiseOrderAlert(StaffAlertKinds.RefundApproved, order, history, requester.PortalUserId, partial: !fullyRefunded);
 
         await _db.SaveChangesAsync();
         // One manager decision, however many lines it covers.
@@ -1482,6 +1487,7 @@ public class OrderManagementService : IOrderManagementService
         // rejected failed-delivery refund, so it can still be confirmed as delivered).
         var currentStatus = order.OrderStatus;
         var revertStatus = await PreviousStatusBeforeRefundRequestAsync(orderId);
+        var requester = await RequesterPortalIdAsync(orderId, "Refund Requested");
 
         order.OrderStatus = revertStatus;
         order.ApprovedBy = await _staff.CurrentStaffIdAsync() ?? rejectedBy; // Log manager id
@@ -1499,6 +1505,7 @@ public class OrderManagementService : IOrderManagementService
             req.ApprovedBy = await _staff.CurrentStaffIdAsync() ?? rejectedBy;
             req.UpdatedAt = DateTime.UtcNow;
         }
+        RaiseOrderAlert(StaffAlertKinds.RefundRejected, order, history, requester.PortalUserId, requester.Partial);
 
         await _db.SaveChangesAsync();
         // A saved decision to reject is a successful change.
@@ -1540,6 +1547,7 @@ public class OrderManagementService : IOrderManagementService
         order.UpdatedAt = DateTime.UtcNow;
 
         var history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Void Requested", 1, reason);
+        RaiseOrderAlert(StaffAlertKinds.VoidRequested, order, history, CurrentPortalUserId());
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
         await AuditOrderAsync(order, history, "void_requested", "requested a void of");
@@ -1596,6 +1604,7 @@ public class OrderManagementService : IOrderManagementService
                 throw new InvalidOperationException("You requested this void, so a different manager has to approve it.");
         }
 
+        var requester = await RequesterPortalIdAsync(orderId, "Void Requested");
         var currentStatus = order.OrderStatus;
         order.OrderStatus = "Voided";
         order.ApprovedBy = await _staff.CurrentStaffIdAsync() ?? approvedBy;
@@ -1603,6 +1612,7 @@ public class OrderManagementService : IOrderManagementService
         order.UpdatedAt = DateTime.UtcNow;
 
         var history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, "Voided", approvedBy, "Void approved");
+        RaiseOrderAlert(StaffAlertKinds.VoidApproved, order, history, requester.PortalUserId);
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
         await AuditOrderAsync(order, history, "void_approved", "approved the void of");
@@ -1665,13 +1675,15 @@ public class OrderManagementService : IOrderManagementService
             .FirstOrDefaultAsync();
             
         string revertStatus = previousStatusRecord?.OldStatus ?? "Completed";
-        
+        var requester = await RequesterPortalIdAsync(orderId, "Void Requested");
+
         order.OrderStatus = revertStatus;
         order.ApprovedBy = await _staff.CurrentStaffIdAsync() ?? rejectedBy; 
         order.RejectionRemarks = $"Void Rejected: {reason}";
         order.UpdatedAt = DateTime.UtcNow;
 
         var history = await RecordStatusHistoryAsync(order.OrderId, currentStatus, revertStatus, rejectedBy, $"Void rejected: {reason}");
+        RaiseOrderAlert(StaffAlertKinds.VoidRejected, order, history, requester.PortalUserId);
         _db.Orders.Update(order);
         await _db.SaveChangesAsync();
         await AuditOrderAsync(order, history, "void_rejected", "rejected the void request for");
@@ -1700,6 +1712,55 @@ public class OrderManagementService : IOrderManagementService
                 ["partial"] = partial,
             },
         });
+    }
+
+    // Staff bell: the alert is saved with the history row; that row is the occurrence.
+    private void RaiseOrderAlert(string kind, Order order, OrderStatusHistory history, string? person, bool partial = false) =>
+        _db.RaiseStaffAlert(new StaffAlertIntent
+        {
+            Kind = kind,
+            History = history,
+            LocationId = order.LocationId,
+            OrderId = order.OrderId,
+            OrderNumber = order.OrderNumber,
+            PersonPortalUserId = string.IsNullOrWhiteSpace(person) ? null : person,
+            Partial = partial,
+        });
+
+    // The verified Portal ID of the signed-in requester; null outside a Portal session.
+    private string? CurrentPortalUserId() => _httpContextAccessor.HttpContext?.GetCurrentUser()?.PortalUserId;
+
+    private sealed record RequestOrigin(string? PortalUserId, bool Partial);
+
+    /// <summary>
+    /// Who filed the open request: the Portal ID captured on its alert, else (requests from before
+    /// the bell) the saved staff number's Portal ID. Unknown stays unknown, so the decision reaches
+    /// no one rather than the whole branch.
+    /// </summary>
+    private async Task<RequestOrigin> RequesterPortalIdAsync(int orderId, string requestedStatus)
+    {
+        var request = await _db.OrderStatusHistories.AsNoTracking()
+            .Where(h => h.OrderId == orderId && h.NewStatus == requestedStatus)
+            .OrderByDescending(h => h.CreatedAt).ThenByDescending(h => h.Id)
+            .Select(h => new { h.Id, h.ChangedBy })
+            .FirstOrDefaultAsync();
+        if (request is null) return new RequestOrigin(null, false);
+
+        var alert = await _db.StaffAlerts.AsNoTracking()
+            .Where(a => a.SourceHistoryId == request.Id)
+            .Select(a => new { a.RequesterPortalUserId, a.Partial })
+            .FirstOrDefaultAsync();
+        if (!string.IsNullOrWhiteSpace(alert?.RequesterPortalUserId))
+            return new RequestOrigin(alert.RequesterPortalUserId, alert.Partial);
+
+        // Staff numbers start at 1000; 0 and 1 are the old "unknown" placeholders.
+        string? fromStaffNumber = null;
+        if (request.ChangedBy is int staffNumber && staffNumber >= 1000)
+            fromStaffNumber = await _db.PosStaffUsers.AsNoTracking()
+                .Where(s => s.Id == staffNumber)
+                .Select(s => s.AuthUserId)
+                .FirstOrDefaultAsync();
+        return new RequestOrigin(fromStaffNumber, alert?.Partial ?? false);
     }
 
     private async Task<OrderStatusHistory> RecordStatusHistoryAsync(int orderId, string oldStatus, string newStatus, int? changedBy, string? remarks = null)

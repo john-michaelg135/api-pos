@@ -3,7 +3,7 @@ using Domains.Entities;
 
 namespace Infrastructures.Persistence;
 
-public class PosDbContext : DbContext
+public partial class PosDbContext : DbContext
 {
     public PosDbContext(DbContextOptions<PosDbContext> options) : base(options)
     {
@@ -205,6 +205,8 @@ public class PosDbContext : DbContext
             entity.Property(e => e.Quantity).IsRequired().HasDefaultValue(0);
             entity.Property(e => e.MinThreshold).IsRequired().HasDefaultValue(0);
             entity.Property(e => e.UpdatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.Property(e => e.LowStockAlertOpen).IsRequired().HasDefaultValue(false);
+            entity.Property(e => e.LowStockEpisode).IsRequired().HasDefaultValue(0);
 
             // Unique: one record per variation per location
             entity.HasIndex(e => new { e.VariationId, e.LocationId }).IsUnique();
@@ -440,6 +442,55 @@ public class PosDbContext : DbContext
             entity.Property(e => e.AuthUserId).IsRequired().HasMaxLength(100);
             entity.Property(e => e.PinCode).IsRequired().HasMaxLength(20);
             entity.HasIndex(e => e.AuthUserId).IsUnique();
+        });
+
+        // ── Staff bell alerts and their Portal copies ──
+        modelBuilder.Entity<StaffAlert>(entity =>
+        {
+            entity.ToTable("StaffAlerts");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).UseIdentityByDefaultColumn();
+            entity.Property(e => e.OccurrenceKey).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.Kind).IsRequired().HasMaxLength(60);
+            entity.Property(e => e.Module).IsRequired().HasMaxLength(60);
+            entity.Property(e => e.Audience).IsRequired().HasMaxLength(20);
+            entity.Property(e => e.TransferId).HasMaxLength(50);
+            entity.Property(e => e.RecipientPortalUserId).HasMaxLength(100);
+            entity.Property(e => e.RequesterPortalUserId).HasMaxLength(100);
+            entity.Property(e => e.ReadByPortalUserId).HasMaxLength(100);
+            entity.Property(e => e.Title).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.Body).IsRequired().HasMaxLength(500);
+            entity.Property(e => e.LinkPath).IsRequired().HasMaxLength(300);
+            entity.Property(e => e.CreatedAt).IsRequired();
+
+            // One alert per business occurrence (history row, transfer, low-stock episode).
+            entity.HasIndex(e => e.OccurrenceKey).IsUnique();
+            entity.HasIndex(e => new { e.LocationId, e.Id });
+            entity.HasIndex(e => e.RecipientPortalUserId);
+            entity.HasIndex(e => e.SourceHistoryId);
+            entity.HasIndex(e => e.AudienceResolvedAt).HasFilter("\"AudienceResolvedAt\" IS NULL");
+            entity.HasIndex(e => e.NudgedAt).HasFilter("\"NudgedAt\" IS NULL");
+
+            entity.HasMany(e => e.Copies)
+                .WithOne(c => c.Alert)
+                .HasForeignKey(c => c.AlertId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<StaffAlertCopy>(entity =>
+        {
+            entity.ToTable("StaffAlertCopies");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).UseIdentityByDefaultColumn();
+            entity.Property(e => e.PortalUserId).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.RemoteId).HasColumnType("uuid");
+            entity.Property(e => e.State).IsRequired().HasMaxLength(20);
+            entity.Property(e => e.LastError).HasMaxLength(200);
+            entity.Property(e => e.CreatedAt).IsRequired();
+
+            // One Portal copy per alert and recipient.
+            entity.HasIndex(e => new { e.AlertId, e.PortalUserId }).IsUnique();
+            entity.HasIndex(e => new { e.Done, e.NextAttemptAt });
         });
 
         // ── StartingCash (cashier's declared drawer cash, one per cashier/branch/day) ──

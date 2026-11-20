@@ -169,6 +169,21 @@ builder.Services.AddScoped<Applications.ProofFiles.IProofUploadService, Applicat
 builder.Services.AddScoped<Applications.ProofFiles.IProofFileFinalizer, Applications.ProofFiles.ProofFileFinalizer>();
 builder.Services.AddHostedService<Applications.ProofFiles.ProofFileFinalizerBackgroundService>();
 
+// Staff bell (refund/void requests and decisions, SCMS deliveries, low stock). Alerts are always
+// recorded and served to the POS bell; Portal copies and the live refresh notice go out through the
+// gateway's "pos" Caller only while STAFF_ALERTS_ENABLED=true (set false to pause; pending copies wait).
+var staffAlertOptions = Applications.StaffAlerts.StaffAlertOptions.FromEnvironment(Environment.GetEnvironmentVariable);
+builder.Services.AddSingleton(staffAlertOptions);
+builder.Services.AddHttpClient(StaffAlertGatewayClient.HttpClientName, client =>
+{
+    // Per-call deadlines come from StaffAlertOptions; this is only an outer bound.
+    client.Timeout = staffAlertOptions.Timeout + TimeSpan.FromSeconds(5);
+}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false });
+builder.Services.AddSingleton<Applications.StaffAlerts.IStaffAlertGateway, StaffAlertGatewayClient>();
+builder.Services.AddScoped<Applications.StaffAlerts.StaffAlertFeed>();
+builder.Services.AddScoped<Applications.StaffAlerts.StaffAlertDispatcher>();
+builder.Services.AddHostedService<Applications.StaffAlerts.StaffAlertDispatcherBackgroundService>();
+
 // ── Database ──
 // Supports a single DATABASE_URL (Neon / Render managed Postgres, SSL enforced)
 // or the split POSTGRES_* vars for local docker. See ConnectionStringFactory.
@@ -253,6 +268,16 @@ if (!proofStorageOptions.UploadsEnabled)
         Applications.ProofFiles.ProofStorageOptions.CallerKeyVariable,
         Applications.ProofFiles.ProofStorageOptions.SigningSecretVariable,
         Applications.ProofFiles.ProofStorageOptions.MinSigningSecretBytes);
+}
+
+if (staffAlertOptions.Requested && !staffAlertOptions.SendsEnabled)
+{
+    app.Logger.LogWarning(
+        "{Enabled}=true but the gateway ({Url}, {Key}) or Portal directory (PORTAL_URL, PORTAL_SYSTEM_SECRET) is missing or invalid; " +
+        "staff alerts stay in the POS bell only.",
+        Applications.StaffAlerts.StaffAlertOptions.EnabledVariable,
+        Applications.StaffAlerts.StaffAlertOptions.GatewayUrlVariable,
+        Applications.StaffAlerts.StaffAlertOptions.CallerKeyVariable);
 }
 
 // ── Auto-run migrations & seed data ──

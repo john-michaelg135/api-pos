@@ -837,6 +837,168 @@ namespace api_pos.Migrations
                     b.ToTable("RefundRequests");
                 });
 
+            modelBuilder.Entity("Domains.Entities.StaffAlert", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("Audience")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<DateTime?>("AudienceResolvedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)");
+
+                    b.Property<string>("LinkPath")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<int?>("LocationId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Module")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)");
+
+                    b.Property<DateTime?>("NudgedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("OccurrenceKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<int?>("OrderId")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("Partial")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("ReadAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ReadByPortalUserId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("RecipientPortalUserId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("RequesterPortalUserId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<int?>("SourceHistoryId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("TransferId")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<int?>("VariationId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AudienceResolvedAt")
+                        .HasFilter("\"AudienceResolvedAt\" IS NULL");
+
+                    b.HasIndex("NudgedAt")
+                        .HasFilter("\"NudgedAt\" IS NULL");
+
+                    b.HasIndex("OccurrenceKey")
+                        .IsUnique();
+
+                    b.HasIndex("RecipientPortalUserId");
+
+                    b.HasIndex("SourceHistoryId");
+
+                    b.HasIndex("LocationId", "Id");
+
+                    b.ToTable("StaffAlerts", (string)null);
+                });
+
+            modelBuilder.Entity("Domains.Entities.StaffAlertCopy", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<long>("AlertId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("Done")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("LastAttemptAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateTime>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PortalUserId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<Guid?>("RemoteId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("SentAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AlertId", "PortalUserId")
+                        .IsUnique();
+
+                    b.HasIndex("Done", "NextAttemptAt");
+
+                    b.ToTable("StaffAlertCopies", (string)null);
+                });
+
             modelBuilder.Entity("Domains.Entities.StartingCash", b =>
                 {
                     b.Property<int>("Id")
@@ -915,6 +1077,16 @@ namespace api_pos.Migrations
 
                     b.Property<int>("LocationId")
                         .HasColumnType("integer");
+
+                    b.Property<bool>("LowStockAlertOpen")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<int>("LowStockEpisode")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
 
                     b.Property<int>("MinThreshold")
                         .ValueGeneratedOnAdd()
@@ -1349,6 +1521,17 @@ namespace api_pos.Migrations
                     b.Navigation("Variation");
                 });
 
+            modelBuilder.Entity("Domains.Entities.StaffAlertCopy", b =>
+                {
+                    b.HasOne("Domains.Entities.StaffAlert", "Alert")
+                        .WithMany("Copies")
+                        .HasForeignKey("AlertId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Alert");
+                });
+
             modelBuilder.Entity("Domains.Entities.StartingCash", b =>
                 {
                     b.HasOne("Domains.Entities.Location", "Location")
@@ -1480,6 +1663,11 @@ namespace api_pos.Migrations
                     b.Navigation("PriceHistories");
 
                     b.Navigation("ProductPrices");
+                });
+
+            modelBuilder.Entity("Domains.Entities.StaffAlert", b =>
+                {
+                    b.Navigation("Copies");
                 });
 
             modelBuilder.Entity("Domains.Entities.StockTransfer", b =>

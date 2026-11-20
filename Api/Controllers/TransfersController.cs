@@ -65,6 +65,15 @@ public class TransfersController : ControllerBase
         };
 
         _db.StockTransfers.Add(transfer);
+        // Staff bell: the first saved manifest is the occurrence; a redelivery returns above.
+        _db.RaiseStaffAlert(new Applications.StaffAlerts.StaffAlertIntent
+        {
+            Kind = Applications.StaffAlerts.StaffAlertKinds.TransferArrived,
+            OccurrenceKey = Applications.StaffAlerts.StaffAlertIntent.TransferKey(transfer.TransferId),
+            LocationId = int.Parse(transfer.DestinationBranchId),
+            TransferId = transfer.TransferId,
+            TransferSourceName = transfer.SourceLocationName,
+        });
         await _db.SaveChangesAsync();
 
         return Ok(new
