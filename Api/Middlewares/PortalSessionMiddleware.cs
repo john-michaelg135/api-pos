@@ -10,6 +10,8 @@ public sealed class PortalSessionMiddleware
     private const string SessionCookie = "pos_session";
     private const string LocationsPath = "/api-pos/locations";
     private const string DashboardPath = "/api-pos/dashboard";
+    // Staff bell: validated against every bell Module, so each viewer sees the alerts of the Modules they hold.
+    private const string NotificationsPath = "/api-pos/notifications";
     private const string DashboardModule = "Dashboard";
     private const string LocationManagementModule = "Location Management";
     private const string SalesProcessingModule = "Sales Processing";
@@ -107,13 +109,17 @@ public sealed class PortalSessionMiddleware
         var isLocationManagementRequest =
             context.Request.Path.StartsWithSegments(LocationsPath, StringComparison.OrdinalIgnoreCase) &&
             !isMineRequest;
+        var isNotificationsRequest = context.Request.Path.StartsWithSegments(NotificationsPath, StringComparison.OrdinalIgnoreCase);
         string[] modulesToValidate = isMineRequest
             ? [.. PosModules, LocationManagementModule]
             : isDashboardRequest
             ? [DashboardModule, .. PosModules]
+            : isNotificationsRequest
+            ? [OrderManagementModule, StockManagementModule]
             : [requiredModule];
         PortalValidationResponse? validation = null;
         var validatedModule = string.Empty;
+        var grantedModules = new List<string>();
         try
         {
             var client = _httpClientFactory.CreateClient("EnterprisePortal");
@@ -129,7 +135,7 @@ public sealed class PortalSessionMiddleware
                 request.Headers.Authorization = new AuthenticationHeaderValue("Basic", credentials);
 
                 using var response = await client.SendAsync(request, context.RequestAborted);
-                if (response.StatusCode == System.Net.HttpStatusCode.Forbidden && (isMineRequest || isDashboardRequest))
+                if (response.StatusCode == System.Net.HttpStatusCode.Forbidden && (isMineRequest || isDashboardRequest || isNotificationsRequest))
                 {
                     continue;
                 }
@@ -162,10 +168,28 @@ public sealed class PortalSessionMiddleware
                     return;
                 }
 
-                validation = await response.Content.ReadFromJsonAsync<PortalValidationResponse>(
+                var moduleValidation = await response.Content.ReadFromJsonAsync<PortalValidationResponse>(
                     cancellationToken: context.RequestAborted);
-                validatedModule = module;
-                break;
+                if (!isNotificationsRequest)
+                {
+                    validation = moduleValidation;
+                    validatedModule = module;
+                    break;
+                }
+
+                // Bell: keep every Module the Portal confirms for this session (and this role may use).
+                if (!IsValid(moduleValidation, systemName, module))
+                {
+                    await WriteErrorAsync(context, StatusCodes.Status503ServiceUnavailable, "Enterprise Portal returned an invalid validation response.");
+                    return;
+                }
+                if (!RoleMayUseModule(moduleValidation!.Staff!.Role!, module)) continue;
+                grantedModules.Add(module);
+                if (validation is null)
+                {
+                    validation = moduleValidation;
+                    validatedModule = module;
+                }
             }
         }
         catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
@@ -188,31 +212,29 @@ public sealed class PortalSessionMiddleware
             return;
         }
 
-        if (validation is not { Active: true } ||
-            !string.Equals(validation.System, systemName, StringComparison.Ordinal) ||
-            !string.Equals(validation.Module, validatedModule, StringComparison.Ordinal) ||
-            string.IsNullOrWhiteSpace(validation.UserId) ||
-            validation.Staff is null ||
-            string.IsNullOrWhiteSpace(validation.Staff.Username) ||
-            string.IsNullOrWhiteSpace(validation.Staff.Role))
+        if (!IsValid(validation, systemName, validatedModule))
         {
             await WriteErrorAsync(context, StatusCodes.Status503ServiceUnavailable, "Enterprise Portal returned an invalid validation response.");
             return;
         }
 
-        if (isDashboardRequest && !AdministratorRoles.Contains(validation.Staff.Role))
+        // IsValid guarantees a staff record with a username and role.
+        var staff = validation.Staff!;
+        var role = staff.Role!;
+
+        if (isDashboardRequest && !AdministratorRoles.Contains(role))
         {
             await WriteErrorAsync(context, StatusCodes.Status403Forbidden, "Only the owner may view the Dashboard.");
             return;
         }
 
-        if (isLocationManagementRequest && !AllLocationRoles.Contains(validation.Staff.Role))
+        if (isLocationManagementRequest && !AllLocationRoles.Contains(role))
         {
             await WriteErrorAsync(context, StatusCodes.Status403Forbidden, "Only Super Admins, CEOs and General Managers can manage locations.");
             return;
         }
 
-        if (!RoleMayUseModule(validation.Staff.Role, validatedModule))
+        if (!RoleMayUseModule(role, validatedModule))
         {
             await WriteErrorAsync(context, StatusCodes.Status403Forbidden, "Your POS role does not allow access to this module.");
             return;
@@ -221,15 +243,25 @@ public sealed class PortalSessionMiddleware
         context.Items["CurrentUser"] = new CurrentUserContext
         {
             PortalUserId = validation.UserId,
-            Username = validation.Staff.Username!,
-            DisplayName = validation.Staff.Name,
-            Role = validation.Staff.Role,
-            IsSuperUser = AllLocationRoles.Contains(validation.Staff.Role),
+            PortalModules = isNotificationsRequest ? [.. grantedModules] : [validatedModule],
+            Username = staff.Username!,
+            DisplayName = staff.Name,
+            Role = role,
+            IsSuperUser = AllLocationRoles.Contains(role),
             Apps = ["POS"],
         };
 
         await _next(context);
     }
+
+    private static bool IsValid(PortalValidationResponse? validation, string systemName, string module) =>
+        validation is { Active: true } &&
+        string.Equals(validation.System, systemName, StringComparison.Ordinal) &&
+        string.Equals(validation.Module, module, StringComparison.Ordinal) &&
+        !string.IsNullOrWhiteSpace(validation.UserId) &&
+        validation.Staff is not null &&
+        !string.IsNullOrWhiteSpace(validation.Staff.Username) &&
+        !string.IsNullOrWhiteSpace(validation.Staff.Role);
 
     private static bool IsMineRequest(PathString path) =>
         path.Value?.Equals($"{LocationsPath}/mine", StringComparison.OrdinalIgnoreCase) == true;
@@ -254,6 +286,8 @@ public sealed class PortalSessionMiddleware
 
         if (path.StartsWithSegments(DashboardPath, StringComparison.OrdinalIgnoreCase))
             return DashboardModule;
+        if (path.StartsWithSegments(NotificationsPath, StringComparison.OrdinalIgnoreCase))
+            return OrderManagementModule; // validated against both bell Modules; see InvokeAsync
         if (path.StartsWithSegments("/api-pos/order-entry/orders/ecommerce", StringComparison.OrdinalIgnoreCase))
             return null;
         if (path.StartsWithSegments("/api-pos/order-entry", StringComparison.OrdinalIgnoreCase))
