@@ -354,6 +354,8 @@ Migration `AddStockRequestCancelAndRepeat` (this revision):
 | 9 | `Api/Controllers/TransfersController.cs` | Read `stockRequestId`, validate it as in §3.3, link the request, and set it to `In Transit`. |
 | 10 | `Applications/Services/TransferReceivingService.cs` → `ReceiveAsync` | After stock is saved, if the transfer has a `StockRequestId`, set the request to `Fulfilled` and fill in `ReceivedQuantity` and `FulfilledAt`. Put `stockRequestId` in the confirmation sent to IMS. |
 | 11 | `Applications/Services/StockRequestSenderBackgroundService.cs` (new) | Every 5 minutes, re-send requests still `Sending`. Stop after 12 attempts (about an hour) and leave them `Sending` with `LastSendError`, so the dialog can show "Couldn't reach IMS". Not added to `ScmsSyncBackgroundService` (an old prototype sync) or the 10-minute reconciliation sweep. |
+| 12 | `ScmsApiClient.CancelStockRequestAsync`, `StockRequestService.CancelAsync`, `PUT …/{requestId}/cancel` | Cancel (§3.6): ask IMS, then mark `Cancelled` on `200`/`404`; refuse on `409`; `503` when IMS can't be reached. The status is re-read after IMS answers so a decision that landed meanwhile is never overwritten. Audit event `stock_request_cancelled`. |
+| 13 | `StockRequestService.CreateAsync` | No "one open request" check (§1.1). A repeated `clientRequestId` returns the earlier request. |
 
 ### 4.3 Validation POS enforces on create
 
@@ -370,23 +372,43 @@ Migration `AddStockRequestCancelAndRepeat` (this revision):
 
 | # | Where | What |
 |---|---|---|
-| 1 | `components/module-pos/StockAdjustmentFormDialog.tsx` | Quantity: `min={1}`, whole numbers only, **no negatives**. Rename "Request Details" to "Notes", or keep the label but send it as `notes`. Below the form, show this variation's requests at this branch with a status badge, quantities, IMS remarks and dates. Disable the form with a short message while a request is open. |
-| 2 | `pages/pos/ViewStockManagement.tsx` → `handleAdjustmentSubmit` | Call `POST /api-pos/stock-requests` instead of `inventoryAdjustmentsCreate`. On `Submitted`, toast "Request sent to IMS." On `Sending`, toast "Saved. IMS couldn't be reached; it will be sent automatically." On `Rejected` from a 400, show IMS's message. |
-| 3 | `components/module-pos/api/api.ts` | Regenerate from api-pos's Swagger, or call `apiClient.instance` directly as the page already does for movements. |
-| 4 | `app/api/pos/[...path]/route.ts` | No change. The page calls `/api-pos/stock-requests` through the Next.js rewrite in `next.config`, not through the allowlisted `/api/pos` proxy. |
-| 5 | Stock Management list (optional) | A small "Requests" badge or filter showing open requests per branch. |
+| 1 | `components/module-pos/StockAdjustmentFormDialog.tsx` | Stock Inventory dialog, request side: the item's open requests (status, what's happening, **Cancel** while IMS hasn't decided), a **New request** form (quantity 1–10000, notes required; shown straight away when nothing is open), a warning when requests are already open, the last closed request, and "View all requests for this item". |
+| 2 | `components/module-pos/StockRequestsPanel.tsx` (new) | **Stock Requests** tab: status chips (Open, Received, Rejected, Cancelled, All) with counts, search, table on desktop and cards on phones. |
+| 3 | `components/module-pos/StockRequestDetailPanel.tsx` (new) | Side panel per request: quantities, IMS's reason, the history as a vertical timeline, Cancel, and a link to the delivery under Receive Stock. |
+| 4 | `components/module-pos/CancelStockRequestDialog.tsx` (new) | Cancel confirmation with an optional reason. The request changes only once IMS confirms. |
+| 5 | `components/module-pos/StockLevelGrid.tsx` | "N open requests" chip on items with requests in progress; opens the tab filtered to that item. |
+| 6 | `pages/pos/ViewStockManagement.tsx` | Calls the routes in §3.5 and sends a new `clientRequestId` per form. Toasts: "Request SR-… sent to IMS.", "Saved. IMS couldn't be reached; it will be sent automatically.", or IMS's reason when it refuses. |
+| 7 | `app/api/pos/[...path]/route.ts` | No change. The page calls `/api-pos/stock-requests` through the Next.js rewrite in `next.config`, not through the allowlisted `/api/pos` proxy. |
 
-Status badge colours: `Sending` grey, `Submitted` blue, `Approved` purple, `In Transit` amber, `Fulfilled` green, `Rejected` red, `Cancelled` grey.
+Status badges: `Sending` grey, `Submitted` blue ("IMS reviewing"), `Approved` purple, `In Transit` amber, `Fulfilled` green ("Received"), `Rejected` red ("Refused by IMS" when IMS refused the submit itself), `Cancelled` grey.
 
 ---
 
 ## 6. IMS setup (for the IMS team)
 
-1. **Receive requests:** `POST /api/pos/stock-requests` as in §3.1. Accept the POS bearer key, store the request, and **dedupe on `requestId`**.
-2. **Review queue:** show IMS staff the branch, item, quantity, current stock, notes and requester. Let them approve with a quantity of at most the requested amount, or reject with remarks.
-3. **Tell POS the decision:** call `PUT /api-pos/stock-requests/{requestId}/status` (§3.2) with `SCMS_SERVICE_KEY`. Retry on `5xx` or a timeout. A `409` means POS has already moved on, so stop retrying.
-4. **Ship:** send the usual transfer manifest to `POST /api-pos/transfers` with `stockRequestId` set (§3.3). Use one delivery per request, and the quantity should be the `approvedQuantity`.
-5. **Close:** when the transfer IMS shipped for the request is confirmed received (the receive-confirmation, or the status retry `PUT /api/StockTransfers/{transferId}/status` = `Completed`), mark the request complete on the IMS side. Match on `transferId`; `stockRequestId` in the confirmation is a backup (§3.4).
+### 6.1 Already working
+
+- `POST /api/pos/stock-requests` (§3.1) is live and answering POS. Keep deduping on `requestId`.
+
+### 6.2 Still to build or confirm for the first release
+
+1. **Review queue:** show IMS staff the branch, item, quantity, current stock, notes and requester. Approve with a quantity of at most the requested amount, or reject with remarks.
+2. **Tell POS the decision:** call `PUT /api-pos/stock-requests/{requestId}/status` (§3.2) with `SCMS_SERVICE_KEY`. Retry on `5xx` or a timeout. A `409` means POS has already moved on (decided, or **cancelled by the branch**), so stop retrying and close it on your side.
+3. **Ship:** send the usual transfer manifest to `POST /api-pos/transfers` with `stockRequestId` set (§3.3). One delivery per request, for the `approvedQuantity`.
+4. **Close:** when the transfer IMS shipped for the request is confirmed received (the receive-confirmation, or the status retry `PUT /api/StockTransfers/{transferId}/status` = `Completed`), mark the request complete. Match on `transferId`; `stockRequestId` in the confirmation is a backup (§3.4).
+5. **SKUs:** POS sends the variation's SKU as `items[].sku`. When IMS answers `400` "is not an IMS product", the branch sees "Refused by IMS". Make sure IMS matches on the same SKU the product sync and transfer manifests use (for example `UHJ-250G-CONTAINER` was refused in testing).
+
+### 6.3 New in this revision
+
+6. **Cancel endpoint:** build `PUT /api/pos/stock-requests/{requestId}/cancel` exactly as in §3.6:
+   - Accept the POS bearer key, as on the submit endpoint.
+   - `200` when cancelled, and `200` again for a repeat (idempotent).
+   - `404` when IMS never received that `requestId`.
+   - `409` with a short `message` once IMS has approved or rejected it. The branch sees this message.
+   - Store `reason`, `cancelledBy`, `cancelledByName` and `cancelledAt`, and take the request out of the review queue.
+   - Answer within a few seconds: the branch is waiting on the cancel button. POS doesn't queue cancels; if IMS times out, the branch is told to try again.
+7. **Race with a decision:** if IMS staff approve a request at the same moment the branch cancels, whichever IMS records first wins. If the approval wins, answer the cancel with `409` **and** send the decision with the status call, so POS shows `Approved`. If the cancel wins, the later status call gets `409` from POS.
+8. **Several requests per item:** a branch may now send more than one open request for the same item (§1.1). Treat each `requestId` as its own request: don't merge them and don't reject a request because another is open. Your review queue should make it clear when a branch has more than one open request for the same item, so staff can decide on each.
 
 IMS needs nothing new from POS beyond what it already has: the base URL, both keys, the branch list from the location sync, and SKUs from the product sync.
 
