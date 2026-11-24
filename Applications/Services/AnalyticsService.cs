@@ -187,7 +187,15 @@ public class AnalyticsService : IAnalyticsService
         int UnitsReturned,
         decimal Gross,
         decimal Discount,
-        decimal Returns);
+        decimal Returns,
+        // System loss facts only: units written off, their value and why.
+        int UnitsLost = 0,
+        decimal LossValue = 0,
+        string? LossKey = null,
+        string? LossReason = null)
+    {
+        public bool IsLoss => LossKey != null;
+    }
 
     public async Task<SalesReportDto> GetSalesReportAsync(AnalyticsFilterDto filter)
     {
@@ -212,8 +220,25 @@ public class AnalyticsService : IAnalyticsService
 
         var net = report.Current.NetSales;
         report.ByBranch = Lines(facts, f => f.Branch, net);
-        report.ByChannel = Lines(facts, f => f.Channel, net);
-        report.ByPaymentMethod = Lines(facts, f => f.Payment, net);
+        // A write-off has no sales channel or payment, so it stays out of those breakdowns.
+        var saleFacts = facts.Where(f => !f.IsLoss).ToList();
+        report.ByChannel = Lines(saleFacts, f => f.Channel, net);
+        report.ByPaymentMethod = Lines(saleFacts, f => f.Payment, net);
+
+        var lossFacts = facts.Where(f => f.IsLoss).ToList();
+        report.ByLossReason = lossFacts
+            .GroupBy(f => f.LossReason ?? "Other")
+            .Select(g => new SalesReportLossLineDto
+            {
+                Label = g.Key,
+                LossCount = g.Select(f => f.LossKey).Distinct().Count(),
+                UnitsLost = g.Sum(f => f.UnitsLost),
+                SystemLosses = g.Sum(f => f.LossValue),
+                Share = SharePercent(g.Sum(f => f.LossValue), report.Current.SystemLosses),
+            })
+            .OrderByDescending(l => l.SystemLosses)
+            .ThenBy(l => l.Label)
+            .ToList();
 
         report.ByProduct = facts
             .GroupBy(f => f.VariationId)
@@ -235,6 +260,8 @@ public class AnalyticsService : IAnalyticsService
                     Discounts = discounts,
                     Returns = returns,
                     NetSales = gross - discounts - returns,
+                    UnitsLost = g.Sum(f => f.UnitsLost),
+                    SystemLosses = g.Sum(f => f.LossValue),
                     AverageUnitPrice = units > 0 ? Math.Round((gross - discounts) / units, 2) : 0,
                     // Sales mix: share of gross sales, which can't go negative or past 100%
                     // when a refund of an older sale lands in this period.
@@ -242,6 +269,7 @@ public class AnalyticsService : IAnalyticsService
                 };
             })
             .OrderByDescending(p => p.NetSales)
+            .ThenByDescending(p => p.SystemLosses)
             .ThenBy(p => p.ProductName)
             .ToList();
 
@@ -345,7 +373,42 @@ public class AnalyticsService : IAnalyticsService
             })
             .ToListAsync();
 
+        // System losses: stock a manager wrote off as unsellable, on the day it was recorded,
+        // valued at the selling price kept with the loss.
+        var lossQuery = ScopeToLocations(_db.StockAdjustments.AsNoTracking(), locationId)
+            .Where(a => a.AdjustmentType == InventoryService.StockLossType && a.Status == "Approved");
+        if (from.HasValue) lossQuery = lossQuery.Where(a => a.CreatedAt >= from.Value);
+        if (to.HasValue) lossQuery = lossQuery.Where(a => a.CreatedAt <= to.Value);
+        var losses = await lossQuery
+            .Select(a => new
+            {
+                a.AdjustmentId,
+                a.CreatedAt,
+                a.Location,
+                a.VariationId,
+                a.Variation!.Sku,
+                a.Variation.VariationName,
+                a.Variation.Product.ProductName,
+                a.Quantity,
+                a.UnitPrice,
+                a.LossReason,
+            })
+            .ToListAsync();
+
         var facts = new List<SalesFact>();
+
+        foreach (var loss in losses)
+        {
+            var units = Math.Abs(loss.Quantity);
+            facts.Add(new SalesFact(
+                loss.CreatedAt, BranchLabel(loss.Location), string.Empty, string.Empty, loss.VariationId,
+                loss.Sku ?? string.Empty, loss.ProductName ?? "Unknown", loss.VariationName ?? "Unknown",
+                null, null, 0, 0, 0, 0, 0,
+                UnitsLost: units,
+                LossValue: (loss.UnitPrice ?? 0) * units,
+                LossKey: $"loss-{loss.AdjustmentId}",
+                LossReason: loss.LossReason ?? "Other"));
+        }
 
         foreach (var forfeit in forfeits.Where(f => f.Kept > 0))
         {
@@ -416,6 +479,10 @@ public class AnalyticsService : IAnalyticsService
         totals.AverageTransaction = totals.Transactions > 0
             ? Math.Round((totals.GrossSales - totals.Discounts) / totals.Transactions, 2)
             : 0;
+        totals.SystemLosses = facts.Sum(f => f.LossValue);
+        totals.UnitsLost = facts.Sum(f => f.UnitsLost);
+        totals.LossCount = facts.Where(f => f.IsLoss).Select(f => f.LossKey).Distinct().Count();
+        totals.NetAfterLosses = totals.NetSales - totals.SystemLosses;
         return totals;
     }
 
@@ -484,6 +551,31 @@ public class AnalyticsService : IAnalyticsService
 
         if (locationId.HasValue)
             query = query.Where(o => o.LocationId == locationId.Value);
+
+        return query;
+    }
+
+    // Same branch rules as ScopeToLocations, for system losses.
+    private IQueryable<Domains.Entities.StockAdjustment> ScopeToLocations(
+        IQueryable<Domains.Entities.StockAdjustment> query,
+        int? locationId)
+    {
+        var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
+
+        if (currentUser is { IsSuperUser: false })
+        {
+            var allowedLocations = currentUser.LocationIds;
+            if (allowedLocations.Length == 0 ||
+                (locationId.HasValue && !allowedLocations.Contains(locationId.Value)))
+            {
+                return query.Where(_ => false);
+            }
+
+            query = query.Where(a => allowedLocations.Contains(a.LocationId));
+        }
+
+        if (locationId.HasValue)
+            query = query.Where(a => a.LocationId == locationId.Value);
 
         return query;
     }

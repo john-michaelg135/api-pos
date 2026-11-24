@@ -175,6 +175,45 @@ public class CashAuditPriceHistoryStockLossTests
     }
 
     [Fact]
+    public async Task The_sales_report_shows_system_losses_without_changing_net_sales()
+    {
+        using var pos = new PosHarness();
+        SeedCatalog(pos, stock: 10);
+        pos.Db.Orders.Add(new Order
+        {
+            OrderId = 900, OrderNumber = "ORD-T-900", OrderType = "Walk-in", OrderSource = "POS", LocationId = 8,
+            PaymentMethod = "Cash", PaymentStatus = "Paid", OrderStatus = "Completed", TotalAmount = 450m,
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+        });
+        pos.Db.OrderItems.Add(new OrderItem { OrderId = 900, VariationId = 11, Quantity = 3, UnitPrice = 150m, Subtotal = 450m });
+        pos.Db.SaveChanges();
+        pos.SignIn(Manager);
+        await Adjustments(pos).RecordStockLossAsync(new RecordStockLossDto { VariationId = 11, LocationId = 8, Quantity = 2, LossReason = StockLossReasons.Expired });
+        await Adjustments(pos).RecordStockLossAsync(new RecordStockLossDto { VariationId = 11, LocationId = 8, Quantity = 1, LossReason = StockLossReasons.Damaged });
+
+        var report = await new AnalyticsService(pos.Db, pos.Accessor).GetSalesReportAsync(new Api.Contracts.Analytics.AnalyticsFilterDto
+        {
+            DateFrom = DateTime.UtcNow.AddDays(-1),
+            DateTo = DateTime.UtcNow.AddMinutes(1),
+        });
+
+        Assert.Equal(450m, report.Current.NetSales);          // a write-off is not a sale or a return
+        Assert.Equal(450m, report.Current.SystemLosses);       // 3 units × ₱150
+        Assert.Equal((3, 2), (report.Current.UnitsLost, report.Current.LossCount));
+        Assert.Equal(0m, report.Current.NetAfterLosses);
+        Assert.Equal(1, report.Current.Transactions);          // losses are not transactions
+        Assert.Equal(3, report.Current.UnitsSold);
+        Assert.Equal(450m, Assert.Single(report.ByBranch).SystemLosses);
+        Assert.Equal(0m, Assert.Single(report.ByChannel).SystemLosses); // no channel for a write-off
+        Assert.Equal(0m, Assert.Single(report.ByPaymentMethod).SystemLosses);
+        Assert.Equal(["Expired", "Damaged"], report.ByLossReason.Select(l => l.Label));
+        Assert.Equal(300m, report.ByLossReason[0].SystemLosses);
+        var product = Assert.Single(report.ByProduct);
+        Assert.Equal((3, 3, 450m), (product.UnitsSold, product.UnitsLost, product.SystemLosses));
+        Assert.Equal(450m, report.Trend.Sum(t => t.SystemLosses));
+    }
+
+    [Fact]
     public async Task A_loss_larger_than_the_stock_on_hand_is_refused()
     {
         using var pos = new PosHarness();

@@ -23,6 +23,9 @@ public class SalesReportDto
     public List<SalesReportLineDto> ByPaymentMethod { get; set; } = new();
     public List<SalesReportProductDto> ByProduct { get; set; } = new();
 
+    /// <summary>System losses (stock written off as unsellable) by reason: Expired, Damaged, ...</summary>
+    public List<SalesReportLossLineDto> ByLossReason { get; set; } = new();
+
     /// <summary>"day" when the period spans up to 62 days, otherwise "month".</summary>
     public string TrendGranularity { get; set; } = "day";
     public List<SalesReportLineDto> Trend { get; set; } = new();
@@ -42,6 +45,26 @@ public class SalesReportTotalsDto
     public int RefundCount { get; set; }
     /// <summary>Amount charged per transaction (gross less discounts, over transactions).</summary>
     public decimal AverageTransaction { get; set; }
+
+    /// <summary>
+    /// Sales value of stock written off as unsellable (system losses recorded by managers), at the
+    /// selling price when it was written off. Not a sale or a return, so net sales are unchanged.
+    /// </summary>
+    public decimal SystemLosses { get; set; }
+    public int UnitsLost { get; set; }
+    public int LossCount { get; set; }
+    /// <summary>Net sales less system losses.</summary>
+    public decimal NetAfterLosses { get; set; }
+}
+
+public class SalesReportLossLineDto
+{
+    public string Label { get; set; } = string.Empty;
+    public int LossCount { get; set; }
+    public int UnitsLost { get; set; }
+    public decimal SystemLosses { get; set; }
+    /// <summary>Share of the report's system losses, in percent.</summary>
+    public decimal Share { get; set; }
 }
 
 public class SalesReportLineDto : SalesReportTotalsDto
@@ -62,6 +85,9 @@ public class SalesReportProductDto
     public decimal Discounts { get; set; }
     public decimal Returns { get; set; }
     public decimal NetSales { get; set; }
+    public int UnitsLost { get; set; }
+    /// <summary>Sales value of this item's units written off as system losses.</summary>
+    public decimal SystemLosses { get; set; }
     /// <summary>Average price actually charged per unit sold.</summary>
     public decimal AverageUnitPrice { get; set; }
     /// <summary>Share of the report's gross sales (sales mix), in percent.</summary>
