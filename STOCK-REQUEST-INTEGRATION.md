@@ -4,7 +4,7 @@ How a branch asks IMS for more stock from the POS **Stock Inventory** dialog, an
 
 This adds a new module to the existing POS–IMS integration. It reuses the same base URL, service keys and headers, and the existing delivery flow (transfer manifest → Receive Stock → receive confirmation).
 
-> **Status (2026-11-25):** the POS side is built on branch `feat/stock-requests` in api-pos and web-pos (not merged yet). api-pos tests: 103 passing, 30 of them for this feature. The IMS side (§6) is not started, so until IMS has `POST /api/pos/stock-requests`, requests stay `Sending`. Cancel (§7) is not built.
+> **Status (2026-11-26):** submit, decision, delivery and receipt are live (api-pos #10, web-pos #59), and IMS's `POST /api/pos/stock-requests` is answering. **New in this revision** (branch `feat/stock-request-cancel-multi`): the branch can **cancel** a request until IMS decides (§3.6), and a branch can have **several open requests for the same item** (§1.1). Cancel needs a new IMS endpoint, `PUT /api/pos/stock-requests/{requestId}/cancel`; see §6 for what IMS has to build.
 
 > Naming: the UI says **IMS**. In code and config the same system is still called **SCMS** (`ScmsApiClient`, `SCMS_API_BASE_URL`, …). They are the same system.
 
@@ -31,6 +31,13 @@ sequenceDiagram
     I->>P: PUT /api-pos/stock-requests/{requestId}/status (Approved / Rejected)
     P->>P: status: Approved or Rejected
 
+    opt Branch cancels before IMS decides
+        B->>P: PUT /api-pos/stock-requests/{requestId}/cancel
+        P->>I: PUT /api/pos/stock-requests/{requestId}/cancel
+        I-->>P: 200 (or 404 if IMS never got it)
+        P->>P: status: Cancelled
+    end
+
     I->>P: POST /api-pos/transfers (manifest with stockRequestId)
     P->>P: status: In Transit
     B->>P: Receive Stock (existing)
@@ -48,23 +55,26 @@ sequenceDiagram
 | `Rejected` | IMS won't send stock. `remarks` says why. This is final. | IMS status call |
 | `In Transit` | IMS posted a delivery linked to this request. | POS, when the manifest arrives |
 | `Fulfilled` | The branch received that delivery. This is final. | POS, on Receive Stock |
-| `Cancelled` | The branch withdrew it before IMS decided. This is final. Optional, see §7. | POS |
+| `Cancelled` | The branch withdrew it before IMS decided, and IMS confirmed (§3.6). This is final. | POS, on cancel |
 
 Allowed moves:
-- `Sending → Submitted`
-- `Submitted → Approved`, `Rejected` or `Cancelled`
+- `Sending → Submitted`, or `Rejected` when IMS refuses the submit (§3.1)
+- `Sending` or `Submitted → Approved`, `Rejected` or `Cancelled`
 - `Approved → In Transit → Fulfilled`
+
+**A request can be cancelled only while it is `Sending` or `Submitted`.** Once IMS has approved (or rejected) it, it can't be cancelled.
 
 POS refuses any other change with `409 Conflict`.
 
-### What changes from today
+### 1.1 Several requests for the same item
 
-Today the **Request Stock** button saves a stock *adjustment* in POS: `POST /api-pos/inventory/adjustments`, `adjustmentType: "Correction"`, status `PendingApproval`.
-- Nothing is sent to IMS.
-- Nothing in the POS UI ever approves it, so every request sits as `PendingApproval` forever.
-- The quantity box also accepts negative numbers (down to −10000), which makes no sense for a request.
+A branch may have **any number of open requests for the same item**. IMS decides on each one separately; a branch may need a second request (a different reason, an urgent top-up) while the first is still open.
 
-The new flow replaces this. Stock adjustments stay as they are for damage, loss and corrections, but **Request Stock stops using them**.
+- Each request has its own `requestId`, its own decision and its own delivery (still one delivery per request, §3.3).
+- POS doesn't block a new request because another is open. The UI warns instead: "You already have 2 open requests for this item (10 units)."
+- A double-click or a retried submit must still not create two requests. The UI sends a `clientRequestId` that it generates once per form; the same key returns the same request (§3.5).
+
+The old **Request Stock** button saved a `Correction` stock adjustment that was never sent anywhere or approved. Request Stock no longer uses adjustments; those old `PendingApproval` rows don't change stock and can be left alone.
 
 ---
 
@@ -221,8 +231,8 @@ Nothing else in that payload changes. Received, damaged and missing counts work 
 | Method & path | Who | Purpose |
 |---|---|---|
 | `POST /api-pos/stock-requests` | Stock Management users with access to that branch | Create and send a request. |
-| `GET /api-pos/stock-requests?locationId=&variationId=` | same | List requests for the dialog. Branch staff see only their own branches. |
-| `PUT /api-pos/stock-requests/{requestId}/cancel` | same | Optional (§7). Only while `Sending` or `Submitted`. **Not built.** |
+| `GET /api-pos/stock-requests?locationId=&variationId=&open=` | same | List requests, newest first (at most 200). All filters optional; `open=true` returns only `Sending`, `Submitted`, `Approved` and `In Transit`. Branch staff see only their own branches. |
+| `PUT /api-pos/stock-requests/{requestId}/cancel` | same | Cancel while `Sending` or `Submitted` (§3.6). Body: `{ "reason": "…" }`, optional. |
 
 **`CreateStockRequestDto`** (UI → POS)
 
@@ -232,10 +242,64 @@ Nothing else in that payload changes. Received, damaged and missing counts work 
 | `locationId` | int | A store or bazaar the user has access to. **Not** the Commissary, since stock ships *from* there. |
 | `quantity` | int | 1 – 10000. No negatives, no zero. |
 | `notes` | string | 1 – 500 characters, no `<` or `>`. |
+| `clientRequestId` | string | Optional, at most 64 characters. Generated by the UI once per form (a UUID). If a request with this key already exists, POS returns it with `200` instead of creating another (a new request answers `201`). The same key with a different item, branch or quantity is refused with `409`. |
 
 POS fills in everything else in `StockRequestDto` itself: SKU, names, current stock, the requester from the session, and the time.
 
-**`StockRequestResponseDto`** (POS → UI): `requestId`, `variationId`, `variationName`, `sku`, `locationId`, `locationName`, `quantity`, `approvedQuantity`, `receivedQuantity`, `notes`, `status`, `remarks`, `requestedByName`, `requestedAt`, `decidedByName`, `decidedAt`, `transferId`, `fulfilledAt`.
+**`StockRequestResponseDto`** (POS → UI): `requestId`, `variationId`, `productName`, `variationName`, `sku`, `locationId`, `locationName`, `quantity`, `approvedQuantity`, `receivedQuantity`, `notes`, `status`, `canCancel`, `remarks`, `lastSendError`, `refusedOnSubmit`, `requestedByName`, `requestedAt`, `sentAt`, `decidedByName`, `decidedAt`, `transferId`, `shippedAt`, `fulfilledAt`, `cancelledByName`, `cancelledAt`, `cancelReason`. The dates are the request's timeline.
+
+**Cancel responses** (POS → UI)
+
+| Case | Status |
+|---|---|
+| Cancelled | `200` with the request |
+| Already cancelled | `200` (nothing changes) |
+| Not the caller's branch, or unknown | `404` |
+| Already decided by IMS (`Approved`, `Rejected`, …), or IMS answered `409` | `409` with `message` |
+| IMS couldn't be reached | `503` with `message`; nothing changes, try again |
+
+### 3.6 POS → IMS: cancel a request (IMS builds this)
+
+`PUT {SCMS_API_BASE_URL}/api/pos/stock-requests/{requestId}/cancel`, with the same headers as §3.1.
+
+**Body: `StockRequestCancelDto`**
+
+| Field | Type | Required | Rules / notes |
+|---|---|---|---|
+| `requestId` | string | yes | Same as in the path. |
+| `reason` | string or null | no | At most 500 characters, no `<` or `>`. The branch's reason, if it gave one. |
+| `cancelledBy` | string | yes | Portal user id. |
+| `cancelledByName` | string | yes | Display name. |
+| `cancelledAt` | string (date) | yes | UTC. |
+
+**Example**
+```json
+{
+  "requestId": "SR-000123",
+  "reason": "Got stock from the Makati branch instead.",
+  "cancelledBy": "u_7f3a",
+  "cancelledByName": "Ana Cruz",
+  "cancelledAt": "2026-11-16T07:02:00Z"
+}
+```
+
+**Responses IMS must return**
+
+| Case | Status | Body |
+|---|---|---|
+| Cancelled | `200` | `{ "success": true, "data": { "requestId": "SR-000123", "status": "Cancelled" } }` |
+| Already cancelled | `200` | same body (idempotent) |
+| IMS never received this `requestId` | `404` | `{ "success": false, "message": "..." }` |
+| Already approved or rejected in IMS | `409` | `{ "success": false, "message": "SR-000123 was approved at 06:58." }` |
+| Wrong or missing key | `401` | `{ "success": false, "message": "..." }` |
+
+What POS does with each answer:
+- `200`: the request becomes `Cancelled`.
+- `404`: IMS never had it (it was still `Sending`), so POS cancels it on its own side and stops re-sending it.
+- `409`: POS refuses the cancel and shows IMS's message. **IMS must still send its decision** with the status call (§3.2) if it hasn't, so POS catches up.
+- `5xx`, `401`/`403` or a timeout: POS refuses the cancel with "Couldn't reach IMS. Try again." and changes nothing. POS does not queue cancels.
+
+After a cancel, the request is final in POS. A decision IMS sends later gets `409` (§3.2), and a manifest that names it gets `400` (§3.3).
 
 ---
 
@@ -269,7 +333,11 @@ POS fills in everything else in `StockRequestDto` itself: SKU, names, current st
 
 Also add `StockRequestId varchar(50) null` to `StockTransfers`. Index `StockRequests (LocationId, Status)`.
 
-As built (migration `AddStockRequests`): `TransferId` is an indexed column, not a foreign key. A unique partial index `(VariationId, LocationId) WHERE Status IN ('Sending','Submitted','Approved','In Transit')` enforces "one open request" even under a double submit.
+As built (migration `AddStockRequests`): `TransferId` is an indexed column, not a foreign key.
+
+Migration `AddStockRequestCancelAndRepeat` (this revision):
+- drops the "one open request per item" index;
+- adds `ClientRequestId varchar(64) null` (unique where not null), `ShippedAt`, `CancelledBy`, `CancelledByName`, `CancelledAt`, `CancelReason varchar(500)`, and `RefusedOnSubmit bool`.
 
 ### 4.2 Code to add or change
 
@@ -293,8 +361,8 @@ As built (migration `AddStockRequests`): `TransferId` is an indexed column, not 
 - `notes` is 1 – 500 characters with no `<` or `>`.
 - The variation is active and has a SKU.
 - The location is active, not the Commissary, and in the user's branches. Super Admin, CEO and General Manager can pick any location.
-- **One open request per variation per branch**: refuse a new one while another is `Sending`, `Submitted`, `Approved` or `In Transit`. The message points to the open request. This stops duplicate requests from double-clicks and impatience.
-- Rate limit: reuse `[RateLimit(WindowSeconds = 5, MaxRequests = 1)]`, as on adjustments.
+- **Several open requests per item are allowed** (§1.1). Double submits are stopped by `clientRequestId` (§3.5), backed by the rate limit.
+- Rate limit: reuse `[RateLimit(WindowSeconds = 5, MaxRequests = 1)]`, as on adjustments. Cancel has its own, same limit.
 
 ---
 
@@ -328,7 +396,8 @@ IMS needs nothing new from POS beyond what it already has: the base URL, both ke
 
 | Topic | Proposal |
 |---|---|
-| Cancel | Phase 2. The branch can cancel only while the request is `Sending` or `Submitted`. POS would call `PUT {IMS}/api/pos/stock-requests/{requestId}/cancel`. If IMS has already approved, IMS answers `409` and the cancel is refused. |
+| Cancel | **Agreed in this revision**, see §3.6. Only while `Sending` or `Submitted`; IMS answers `409` once it has decided. |
+| Several open requests per item | **Agreed in this revision**, see §1.1. IMS treats each `requestId` on its own. |
 | Split shipments | Not supported. One delivery per request. If needed later, POS would keep the request `In Transit` until the received units reach `approvedQuantity`. |
 | Approving more than requested | Not allowed (`approvedQuantity` ≤ `quantity`). IMS can tell the branch to request more instead. |
 | Approved but never shipped | POS shows `Approved` indefinitely. If needed, IMS can send `Rejected` with remarks to close it. |
@@ -340,12 +409,17 @@ IMS needs nothing new from POS beyond what it already has: the base URL, both ke
 
 - [ ] Request 6 units: the request appears as `Submitted` and IMS has it once, even if POS sent it twice.
 - [ ] IMS down: the request is `Sending` and reaches IMS by itself once IMS is back.
-- [ ] IMS rejects with remarks: POS shows `Rejected` and the remarks, and the branch can request again.
+- [ ] IMS rejects with remarks: POS shows `Rejected` and the remarks.
 - [ ] IMS approves 4 of 6: POS shows `Approved · 4 of 6`.
 - [ ] IMS ships with `stockRequestId`: POS shows `In Transit`, and the delivery appears in Receive Stock.
 - [ ] The branch receives it: stock rises by the received count, the request is `Fulfilled`, and IMS gets the confirmation with `stockRequestId`.
 - [ ] A manifest with the wrong branch, an unknown request or a request that isn't approved gets `400` and nothing is saved.
 - [ ] Quantity 0, a negative number, over 10000, empty notes or `<script>`: refused.
-- [ ] A second request for the same item while one is open: refused with a pointer to the open one.
+- [ ] A second request for the same item while one is open: accepted as a new request (a new `requestId`), and IMS sees two requests.
+- [ ] A double-click on Request Stock (same `clientRequestId`): one request only.
+- [ ] Cancel while `Submitted`: IMS gets the cancel, POS shows `Cancelled` with the reason, and a later IMS decision gets `409`.
+- [ ] Cancel while still `Sending` and IMS never got it: IMS answers `404`, POS shows `Cancelled` and stops re-sending.
+- [ ] Cancel after IMS approved (IMS `409`, or POS already `Approved`): refused, and the request is unchanged.
+- [ ] Cancel while IMS is down: refused with "Couldn't reach IMS", the request is unchanged.
 - [ ] A cashier with no Stock Management access gets `403`. Branch staff can't request for another branch.
 - [ ] The status endpoint called without the service key gets `401`. Called by a signed-in staff member, it gets `403`.

@@ -10,6 +10,9 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Applications.Services;
 
+/// <summary>The request, and whether this call created it (false when a clientRequestId replayed an earlier one).</summary>
+public sealed record StockRequestCreateResult(StockRequestResponseDto Request, bool Created);
+
 /// <summary>A stock request call that can't go ahead; <see cref="Status"/> is the HTTP status to answer with.</summary>
 public sealed class StockRequestException(int status, string message) : Exception(message)
 {
@@ -27,6 +30,8 @@ public class StockRequestService
     public const int MaxSendAttempts = 12;
     public const int MaxQuantity = 10000;
     public const int MaxNotesLength = 500;
+    public const int MaxClientRequestIdLength = 64;
+    public const int MaxListSize = 200;
 
     private readonly PosDbContext _db;
     private readonly ScmsApiClient _scms;
@@ -45,8 +50,16 @@ public class StockRequestService
 
     // ── Branch: create and send ──
 
-    public async Task<StockRequestResponseDto> CreateAsync(CreateStockRequestDto dto, CancellationToken cancellationToken = default)
+    public async Task<StockRequestCreateResult> CreateAsync(CreateStockRequestDto dto, CancellationToken cancellationToken = default)
     {
+        var clientRequestId = string.IsNullOrWhiteSpace(dto.ClientRequestId) ? null : dto.ClientRequestId.Trim();
+        if (clientRequestId is { Length: > MaxClientRequestIdLength })
+            throw new StockRequestException(400, $"clientRequestId must be {MaxClientRequestIdLength} characters or fewer.");
+
+        // A double submit of the same form: answer with the request the first one made.
+        if (clientRequestId is not null && await FindReplayAsync(clientRequestId, dto, cancellationToken) is { } replay)
+            return new(replay, Created: false);
+
         if (dto.Quantity is < 1 or > MaxQuantity)
             throw new StockRequestException(400, $"Quantity must be a whole number from 1 to {MaxQuantity}.");
         var notes = dto.Notes?.Trim() ?? string.Empty;
@@ -76,9 +89,7 @@ public class StockRequestService
         if (user is not null && !PosRoleAuthorization.IsAdministrator(user) && !user.LocationIds.Contains(location.LocationId))
             throw new StockRequestException(403, "You do not have access to this location.");
 
-        var open = await FindOpenAsync(variation.VariationId, location.LocationId, cancellationToken);
-        if (open is not null)
-            throw new StockRequestException(409, OpenRequestMessage(open));
+        // Several open requests for the same item are fine: IMS decides on each one (§1.1).
 
         var currentStock = await _db.Stocks
             .Where(s => s.VariationId == variation.VariationId && s.LocationId == location.LocationId)
@@ -89,6 +100,7 @@ public class StockRequestService
         {
             // Placeholder until the identity is known; replaced with SR-000123 in the same transaction.
             RequestId = $"tmp-{Guid.NewGuid():N}",
+            ClientRequestId = clientRequestId,
             VariationId = variation.VariationId,
             LocationId = location.LocationId,
             Sku = sku,
@@ -115,12 +127,12 @@ public class StockRequestService
                 await _db.SaveChangesAsync(cancellationToken);
                 if (transaction is not null) await transaction.CommitAsync(cancellationToken);
             }
-            catch (DbUpdateException)
+            catch (DbUpdateException) when (clientRequestId is not null)
             {
-                // The one-open-request index caught a double submit that slipped past the check above.
+                // Two copies of the same submit raced past the check above; the unique key let one through.
                 _db.ChangeTracker.Clear();
-                open = await FindOpenAsync(dto.VariationId, dto.LocationId, cancellationToken);
-                if (open is not null) throw new StockRequestException(409, OpenRequestMessage(open));
+                if (await FindReplayAsync(clientRequestId, dto, cancellationToken) is { } raced)
+                    return new(raced, Created: false);
                 throw;
             }
         }
@@ -129,6 +141,86 @@ public class StockRequestService
 
         await SendAsync(request, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
+
+        return new(Map(request), Created: true);
+    }
+
+    private async Task<StockRequestResponseDto?> FindReplayAsync(string clientRequestId, CreateStockRequestDto dto, CancellationToken cancellationToken)
+    {
+        var existing = await _db.StockRequests.AsNoTracking()
+            .Include(r => r.Variation).ThenInclude(v => v!.Product)
+            .Include(r => r.Location)
+            .FirstOrDefaultAsync(r => r.ClientRequestId == clientRequestId, cancellationToken);
+        if (existing is null) return null;
+        if (existing.VariationId != dto.VariationId || existing.LocationId != dto.LocationId || existing.Quantity != dto.Quantity)
+            throw new StockRequestException(409, "This form was already used for a different request. Reopen it and try again.");
+        return Map(existing);
+    }
+
+    // ── Branch: cancel before IMS decides ──
+
+    /// <summary>
+    /// Withdraws a request IMS hasn't decided on (§3.6). IMS is asked first; the request becomes
+    /// Cancelled only when IMS confirms (200) or never had it (404). Nothing changes otherwise.
+    /// </summary>
+    public async Task<StockRequestResponseDto> CancelAsync(string requestId, CancelStockRequestDto? dto, CancellationToken cancellationToken = default)
+    {
+        var reason = string.IsNullOrWhiteSpace(dto?.Reason) ? null : dto.Reason.Trim();
+        if (reason is { Length: > MaxNotesLength })
+            throw new StockRequestException(400, $"The reason must be {MaxNotesLength} characters or fewer.");
+        if (reason is not null && reason.IndexOfAny(['<', '>']) >= 0)
+            throw new StockRequestException(400, "The reason cannot contain < or >.");
+
+        var request = await _db.StockRequests
+            .Include(r => r.Variation).ThenInclude(v => v!.Product)
+            .Include(r => r.Location)
+            .FirstOrDefaultAsync(r => r.RequestId == requestId, cancellationToken);
+        var user = _httpContextAccessor.HttpContext?.GetCurrentUser();
+        // Another branch's request is reported as not found, as Receive Stock does.
+        if (request is null || (user is not null && !PosRoleAuthorization.IsAdministrator(user) && !user.LocationIds.Contains(request.LocationId)))
+            throw new StockRequestException(404, $"Stock request {requestId} was not found.");
+
+        if (request.Status == StockRequestStatuses.Cancelled) return Map(request);
+        if (!StockRequestStatuses.Cancellable.Contains(request.Status))
+            throw new StockRequestException(409, $"Stock request {requestId} is already {request.Status}, so it can't be cancelled.");
+
+        var now = DateTime.UtcNow;
+        var cancelledBy = user?.PortalUserId ?? user?.Username ?? string.Empty;
+        var cancelledByName = user?.DisplayName ?? user?.Username ?? string.Empty;
+        var result = await _scms.CancelStockRequestAsync(new StockRequestCancelDto
+        {
+            RequestId = request.RequestId,
+            Reason = reason,
+            CancelledBy = cancelledBy,
+            CancelledByName = cancelledByName,
+            CancelledAt = now,
+        }, cancellationToken);
+
+        switch (result.Outcome)
+        {
+            case StockRequestCancelOutcome.Refused:
+                throw new StockRequestException(409, $"IMS couldn't cancel {requestId}: {result.Message}");
+            case StockRequestCancelOutcome.Unreachable:
+                _logger.LogWarning("Cancel of stock request {RequestId} didn't reach IMS: {Reason}", requestId, result.Message);
+                throw new StockRequestException(503, "Couldn't reach IMS, so the request wasn't cancelled. Try again in a moment.");
+        }
+
+        // IMS's decision may have landed while we waited; never overwrite it.
+        await _db.Entry(request).ReloadAsync(cancellationToken);
+        if (!StockRequestStatuses.Cancellable.Contains(request.Status))
+            throw new StockRequestException(409, $"Stock request {requestId} became {request.Status} while cancelling, so it wasn't cancelled.");
+
+        var previousStatus = request.Status;
+        request.Status = StockRequestStatuses.Cancelled;
+        request.CancelledBy = cancelledBy;
+        request.CancelledByName = cancelledByName;
+        request.CancelledAt = now;
+        request.CancelReason = reason;
+        request.LastSendError = null;
+        await _db.SaveChangesAsync(cancellationToken);
+
+        await _audit.RecordAsync(StockAudit.StockRequestCancelled(
+            request, StockAudit.ItemLabel(request.Variation), request.Location?.LocationName, previousStatus));
 
         return Map(request);
     }
@@ -209,6 +301,7 @@ public class StockRequestService
             case StockRequestSubmitOutcome.Refused:
                 // IMS looked at it and said no (unknown SKU, bad branch, …): final, with IMS's reason.
                 request.Status = StockRequestStatuses.Rejected;
+                request.RefusedOnSubmit = true;
                 request.Remarks = result.Message;
                 request.DecidedByName = "IMS";
                 request.DecidedAt = DateTime.UtcNow;
@@ -225,7 +318,7 @@ public class StockRequestService
 
     // ── Branch: list ──
 
-    public async Task<List<StockRequestResponseDto>> ListAsync(int? locationId, int? variationId, CancellationToken cancellationToken = default)
+    public async Task<List<StockRequestResponseDto>> ListAsync(int? locationId, int? variationId, bool openOnly = false, CancellationToken cancellationToken = default)
     {
         var query = _db.StockRequests.AsNoTracking()
             .Include(r => r.Variation).ThenInclude(v => v!.Product)
@@ -240,8 +333,9 @@ public class StockRequestService
         }
         if (locationId.HasValue) query = query.Where(r => r.LocationId == locationId.Value);
         if (variationId.HasValue) query = query.Where(r => r.VariationId == variationId.Value);
+        if (openOnly) query = query.Where(r => StockRequestStatuses.Open.Contains(r.Status));
 
-        var requests = await query.OrderByDescending(r => r.RequestedAt).ThenByDescending(r => r.Id).Take(100).ToListAsync(cancellationToken);
+        var requests = await query.OrderByDescending(r => r.RequestedAt).ThenByDescending(r => r.Id).Take(MaxListSize).ToListAsync(cancellationToken);
         return requests.Select(Map).ToList();
     }
 
@@ -332,6 +426,7 @@ public class StockRequestService
     {
         transfer.StockRequestId = request.RequestId;
         request.TransferId = transfer.TransferId;
+        request.ShippedAt = DateTime.UtcNow;
         request.Status = StockRequestStatuses.InTransit;
     }
 
@@ -347,15 +442,6 @@ public class StockRequestService
     }
 
     public static string FormatRequestId(int id) => $"SR-{id:D6}";
-
-    private Task<StockRequest?> FindOpenAsync(int variationId, int locationId, CancellationToken cancellationToken) =>
-        _db.StockRequests.AsNoTracking()
-            .Where(r => r.VariationId == variationId && r.LocationId == locationId && StockRequestStatuses.Open.Contains(r.Status))
-            .OrderByDescending(r => r.Id)
-            .FirstOrDefaultAsync(cancellationToken);
-
-    private static string OpenRequestMessage(StockRequest open) =>
-        $"This item already has an open request at this branch ({open.RequestId}, {open.Status}). Wait for it to be fulfilled or rejected.";
 
     private static string VariationLabel(ProductVariation? variation)
     {
@@ -378,13 +464,20 @@ public class StockRequestService
         ReceivedQuantity = r.ReceivedQuantity,
         Notes = r.Notes,
         Status = r.Status,
+        CanCancel = StockRequestStatuses.Cancellable.Contains(r.Status),
         Remarks = r.Remarks,
+        RefusedOnSubmit = r.RefusedOnSubmit,
         LastSendError = r.Status == StockRequestStatuses.Sending ? r.LastSendError : null,
         RequestedByName = r.RequestedByName,
         RequestedAt = r.RequestedAt,
+        SentAt = r.SentAt,
         DecidedByName = r.DecidedByName,
         DecidedAt = r.DecidedAt,
         TransferId = r.TransferId,
+        ShippedAt = r.ShippedAt,
         FulfilledAt = r.FulfilledAt,
+        CancelledByName = r.CancelledByName,
+        CancelledAt = r.CancelledAt,
+        CancelReason = r.CancelReason,
     };
 }

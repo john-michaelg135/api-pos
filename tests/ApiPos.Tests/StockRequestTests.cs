@@ -89,8 +89,30 @@ public class StockRequestTests
 
         private static CurrentUserContext Ims_ => StockRequestTests.Ims;
 
-        public Task<StockRequestResponseDto> Request(int quantity = 6) =>
-            Service.CreateAsync(new CreateStockRequestDto { VariationId = 11, LocationId = 8, Quantity = quantity, Notes = "Weekend bazaar, expecting double the usual sales." });
+        public async Task<StockRequestResponseDto> Request(int quantity = 6, string? clientRequestId = null) =>
+            (await Service.CreateAsync(new CreateStockRequestDto
+            {
+                VariationId = 11,
+                LocationId = 8,
+                Quantity = quantity,
+                Notes = "Weekend bazaar, expecting double the usual sales.",
+                ClientRequestId = clientRequestId,
+            })).Request;
+
+        /// <summary>IMS answers submits as usual and cancels with <paramref name="cancel"/>.</summary>
+        public void ImsCancelAnswers(Func<HttpResponseMessage> cancel)
+        {
+            var submit = Ims.Respond;
+            Ims.Respond = request => request.Method == HttpMethod.Put && request.RequestUri!.AbsolutePath.EndsWith("/cancel")
+                ? cancel()
+                : submit(request);
+        }
+
+        public Task<StockRequestResponseDto> Cancel(string requestId, string? reason = "Got stock from Makati instead.")
+        {
+            Pos.SignIn(Manager);
+            return Service.CancelAsync(requestId, new CancelStockRequestDto { Reason = reason });
+        }
 
         public Task<StockRequestResponseDto> Approve(string requestId, int quantity)
         {
@@ -240,16 +262,180 @@ public class StockRequestTests
     }
 
     [Fact]
-    public async Task A_second_open_request_for_the_same_item_is_refused()
+    public async Task A_second_open_request_for_the_same_item_is_a_new_request()
     {
         using var f = new Fixture();
-        await f.Request();
+        var first = await f.Request();
 
-        var ex = await Assert.ThrowsAsync<StockRequestException>(() => f.Request(2));
+        var second = await f.Request(2);
+
+        Assert.Equal("SR-000002", second.RequestId);
+        Assert.Equal(StockRequestStatuses.Submitted, second.Status);
+        Assert.Equal(2, f.Pos.Db.StockRequests.Count(r => r.Status == StockRequestStatuses.Submitted));
+        Assert.Equal(2, f.Ims.Calls.Count);
+        Assert.Equal(2, (await f.Service.ListAsync(8, 11, openOnly: true)).Count);
+
+        // Each one is decided and shipped on its own.
+        await f.Approve(first.RequestId, 6);
+        Assert.Equal(StockRequestStatuses.Submitted, f.Pos.Db.StockRequests.Single(r => r.RequestId == second.RequestId).Status);
+    }
+
+    [Fact]
+    public async Task The_same_form_submitted_twice_makes_one_request()
+    {
+        using var f = new Fixture();
+        var key = Guid.NewGuid().ToString();
+
+        var first = await f.Service.CreateAsync(new CreateStockRequestDto { VariationId = 11, LocationId = 8, Quantity = 6, Notes = "x", ClientRequestId = key });
+        var again = await f.Service.CreateAsync(new CreateStockRequestDto { VariationId = 11, LocationId = 8, Quantity = 6, Notes = "x", ClientRequestId = key });
+
+        Assert.True(first.Created);
+        Assert.False(again.Created);
+        Assert.Equal(first.Request.RequestId, again.Request.RequestId);
+        Assert.Single(f.Pos.Db.StockRequests);
+        Assert.Single(f.Ims.Calls);
+
+        var reused = await Assert.ThrowsAsync<StockRequestException>(() =>
+            f.Service.CreateAsync(new CreateStockRequestDto { VariationId = 11, LocationId = 8, Quantity = 9, Notes = "x", ClientRequestId = key }));
+        Assert.Equal(409, reused.Status);
+    }
+
+    [Fact]
+    public async Task A_replayed_form_answers_200_and_a_new_one_201()
+    {
+        using var f = new Fixture();
+        var dto = new CreateStockRequestDto { VariationId = 11, LocationId = 8, Quantity = 6, Notes = "x", ClientRequestId = "form-1" };
+
+        Assert.Equal(201, Assert.IsAssignableFrom<ObjectResult>(await f.Controller(Manager).Create(dto)).StatusCode);
+        Assert.IsType<OkObjectResult>(await f.Controller(Manager).Create(dto));
+    }
+
+    // ── Cancel ──
+
+    [Fact]
+    public async Task A_submitted_request_is_cancelled_once_IMS_confirms()
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+        f.ImsCancelAnswers(() => FakeIms.Status(HttpStatusCode.OK, "{\"success\":true}"));
+
+        var cancelled = await f.Cancel(created.RequestId);
+
+        Assert.Equal(StockRequestStatuses.Cancelled, cancelled.Status);
+        Assert.False(cancelled.CanCancel);
+        Assert.Equal("Mira Reyes", cancelled.CancelledByName);
+        Assert.Equal("Got stock from Makati instead.", cancelled.CancelReason);
+        var (path, body) = f.Ims.Calls.Last();
+        Assert.Equal($"/api/pos/stock-requests/{created.RequestId}/cancel", path);
+        Assert.Contains("\"reason\":\"Got stock from Makati instead.\"", body);
+        Assert.Contains("\"cancelledBy\":\"portal-user-42\"", body);
+
+        // Cancelled is final: a late IMS decision is refused, and cancelling again changes nothing.
+        f.Pos.SignIn(Ims);
+        var late = await Assert.ThrowsAsync<StockRequestException>(() => f.Service.ApplyDecisionAsync(created.RequestId, Decision("Approved", 6)));
+        Assert.Equal(409, late.Status);
+        var calls = f.Ims.Calls.Count;
+        Assert.Equal(StockRequestStatuses.Cancelled, (await f.Cancel(created.RequestId)).Status);
+        Assert.Equal(calls, f.Ims.Calls.Count);
+    }
+
+    [Fact]
+    public async Task A_request_IMS_never_received_is_cancelled_and_no_longer_resent()
+    {
+        using var f = new Fixture();
+        f.Ims.Respond = _ => FakeIms.Status(HttpStatusCode.ServiceUnavailable);
+        var created = await f.Request();
+        Assert.Equal(StockRequestStatuses.Sending, created.Status);
+        Assert.True(created.CanCancel);
+
+        f.Ims.Respond = _ => FakeIms.Created("req_1");
+        f.ImsCancelAnswers(() => FakeIms.Status(HttpStatusCode.NotFound, "{\"message\":\"unknown\"}"));
+        Assert.Equal(StockRequestStatuses.Cancelled, (await f.Cancel(created.RequestId, reason: null)).Status);
+
+        var calls = f.Ims.Calls.Count;
+        await f.Service.RetryPendingAsync();
+        Assert.Equal(calls, f.Ims.Calls.Count);
+    }
+
+    [Fact]
+    public async Task IMS_refusing_the_cancel_leaves_the_request_unchanged()
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+        f.ImsCancelAnswers(() => FakeIms.Status(HttpStatusCode.Conflict, "{\"success\":false,\"message\":\"SR-000001 was approved at 06:58.\"}"));
+
+        var ex = await Assert.ThrowsAsync<StockRequestException>(() => f.Cancel(created.RequestId));
 
         Assert.Equal(409, ex.Status);
-        Assert.Contains("SR-000001", ex.Message);
-        Assert.Single(f.Pos.Db.StockRequests);
+        Assert.Contains("approved at 06:58", ex.Message);
+        Assert.Equal(StockRequestStatuses.Submitted, f.Pos.Db.StockRequests.Single().Status);
+    }
+
+    [Fact]
+    public async Task IMS_down_refuses_the_cancel_and_changes_nothing()
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+        f.ImsCancelAnswers(() => FakeIms.Status(HttpStatusCode.BadGateway));
+
+        var ex = await Assert.ThrowsAsync<StockRequestException>(() => f.Cancel(created.RequestId));
+
+        Assert.Equal(503, ex.Status);
+        var saved = f.Pos.Db.StockRequests.Single();
+        Assert.Equal(StockRequestStatuses.Submitted, saved.Status);
+        Assert.Null(saved.CancelledAt);
+    }
+
+    [Fact]
+    public async Task An_approved_request_cannot_be_cancelled_and_IMS_is_not_asked()
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+        await f.Approve(created.RequestId, 6);
+        var calls = f.Ims.Calls.Count;
+
+        var ex = await Assert.ThrowsAsync<StockRequestException>(() => f.Cancel(created.RequestId));
+
+        Assert.Equal(409, ex.Status);
+        Assert.Equal(calls, f.Ims.Calls.Count);
+        Assert.Equal(StockRequestStatuses.Approved, f.Pos.Db.StockRequests.Single().Status);
+    }
+
+    [Fact]
+    public async Task A_cancelled_request_cannot_be_shipped()
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+        f.ImsCancelAnswers(() => FakeIms.Status(HttpStatusCode.OK));
+        await f.Cancel(created.RequestId);
+
+        var result = await f.Transfers().ReceiveTransferDetails(Manifest(created.RequestId), f.Service);
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Empty(f.Pos.Db.StockTransfers);
+    }
+
+    [Fact]
+    public async Task Staff_cannot_cancel_another_branch_request()
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+
+        var result = await f.Controller(OtherBranchManager).Cancel(created.RequestId, new CancelStockRequestDto());
+
+        Assert.Equal(404, Assert.IsAssignableFrom<ObjectResult>(result).StatusCode);
+        Assert.Equal(StockRequestStatuses.Submitted, f.Pos.Db.StockRequests.Single().Status);
+    }
+
+    [Fact]
+    public async Task A_cancel_reason_with_markup_is_refused()
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+
+        var ex = await Assert.ThrowsAsync<StockRequestException>(() => f.Cancel(created.RequestId, "<b>no</b>"));
+
+        Assert.Equal(400, ex.Status);
     }
 
     [Fact]
@@ -448,7 +634,7 @@ public class StockRequestTests
 
     [Theory]
     [InlineData("PUT", "/api-pos/stock-requests/SR-000001/status", true)]
-    [InlineData("PUT", "/api-pos/stock-requests/SR-000001/cancel", false)]
+    [InlineData("PUT", "/api-pos/stock-requests/SR-000001/cancel", false)] // staff only, never the IMS key
     [InlineData("PUT", "/api-pos/stock-requests/SR-000001/status/extra", false)]
     [InlineData("POST", "/api-pos/stock-requests", false)]
     [InlineData("GET", "/api-pos/stock-requests", false)]

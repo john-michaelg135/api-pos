@@ -361,11 +361,15 @@ public partial class PosDbContext : DbContext
             entity.Property(e => e.TransferId).HasMaxLength(50);
             entity.HasIndex(e => new { e.LocationId, e.Status });
             entity.HasIndex(e => e.TransferId);
-            // One open request per variation per branch, even under a double submit.
-            entity.HasIndex(e => new { e.VariationId, e.LocationId })
+            entity.HasIndex(e => new { e.VariationId, e.LocationId });
+            // A double submit (same UI key) can't create a second request.
+            entity.Property(e => e.ClientRequestId).HasMaxLength(64);
+            entity.HasIndex(e => e.ClientRequestId)
                 .IsUnique()
-                .HasFilter("\"Status\" IN ('Sending', 'Submitted', 'Approved', 'In Transit')")
-                .HasDatabaseName("IX_StockRequests_OneOpenPerVariationBranch");
+                .HasFilter("\"ClientRequestId\" IS NOT NULL");
+            entity.Property(e => e.CancelledBy).HasMaxLength(100);
+            entity.Property(e => e.CancelledByName).HasMaxLength(150);
+            entity.Property(e => e.CancelReason).HasMaxLength(500);
 
             entity.HasOne(e => e.Variation)
                 .WithMany()

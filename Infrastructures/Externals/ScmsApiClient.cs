@@ -117,6 +117,35 @@ public class ScmsApiClient
         }
     }
 
+    /// <summary>
+    /// Asks IMS to cancel a request (PUT /api/pos/stock-requests/{requestId}/cancel). Never throws:
+    /// 200 → Cancelled, 404 → NotFound (IMS never had it), 409 → Refused with IMS's message,
+    /// anything else (5xx, 401/403, timeout, network) → Unreachable.
+    /// </summary>
+    public async Task<StockRequestCancelResult> CancelStockRequestAsync(StockRequestCancelDto body, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var content = await BufferedJsonAsync(body);
+            using var response = await _http.PutAsync($"/api/pos/stock-requests/{Uri.EscapeDataString(body.RequestId)}/cancel", content, cancellationToken);
+            var text = await response.Content.ReadAsStringAsync(cancellationToken);
+            var message = ReadString(text, "message")?.Trim();
+
+            if (response.IsSuccessStatusCode) return new(StockRequestCancelOutcome.Cancelled, null);
+            var status = (int)response.StatusCode;
+            if (status == 404) return new(StockRequestCancelOutcome.NotFound, message);
+            if (status == 409)
+                return new(StockRequestCancelOutcome.Refused,
+                    Truncate(string.IsNullOrWhiteSpace(message) ? "IMS has already decided on this request." : message, 500));
+
+            return new(StockRequestCancelOutcome.Unreachable, Truncate($"IMS answered HTTP {status}{(string.IsNullOrWhiteSpace(message) ? "" : $": {message}")}", 300));
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            return new(StockRequestCancelOutcome.Unreachable, $"IMS could not be reached ({ex.GetType().Name}).");
+        }
+    }
+
     private static string? ReadString(string json, params string[] path)
     {
         if (string.IsNullOrWhiteSpace(json)) return null;

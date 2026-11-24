@@ -1290,6 +1290,25 @@ namespace api_pos.Migrations
                     b.Property<int?>("ApprovedQuantity")
                         .HasColumnType("integer");
 
+                    b.Property<string>("CancelReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<DateTime?>("CancelledAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CancelledBy")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("CancelledByName")
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)");
+
+                    b.Property<string>("ClientRequestId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<int>("CurrentStockAtRequest")
                         .HasColumnType("integer");
 
@@ -1329,6 +1348,9 @@ namespace api_pos.Migrations
                     b.Property<int?>("ReceivedQuantity")
                         .HasColumnType("integer");
 
+                    b.Property<bool>("RefusedOnSubmit")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("Remarks")
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
@@ -1357,6 +1379,9 @@ namespace api_pos.Migrations
                     b.Property<DateTime?>("SentAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTime?>("ShippedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("Sku")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -1376,6 +1401,10 @@ namespace api_pos.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("ClientRequestId")
+                        .IsUnique()
+                        .HasFilter("\"ClientRequestId\" IS NOT NULL");
+
                     b.HasIndex("RequestId")
                         .IsUnique();
 
@@ -1383,10 +1412,7 @@ namespace api_pos.Migrations
 
                     b.HasIndex("LocationId", "Status");
 
-                    b.HasIndex("VariationId", "LocationId")
-                        .IsUnique()
-                        .HasDatabaseName("IX_StockRequests_OneOpenPerVariationBranch")
-                        .HasFilter("\"Status\" IN ('Sending', 'Submitted', 'Approved', 'In Transit')");
+                    b.HasIndex("VariationId", "LocationId");
 
                     b.ToTable("StockRequests");
                 });
