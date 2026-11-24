@@ -26,6 +26,7 @@ public class StockRequestsController : ControllerBase
     [HttpPost]
     [RateLimit(WindowSeconds = 5, MaxRequests = 1, Message = "This request is already being sent. Please wait a moment.")]
     [ProducesResponseType(typeof(StockRequestResponseDto), StatusCodes.Status201Created)]
+    [ProducesResponseType(typeof(StockRequestResponseDto), StatusCodes.Status200OK)] // same clientRequestId again
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<IActionResult> Create([FromBody] CreateStockRequestDto dto)
@@ -37,8 +38,8 @@ public class StockRequestsController : ControllerBase
 
         try
         {
-            var created = await _requests.CreateAsync(dto, HttpContext.RequestAborted);
-            return StatusCode(StatusCodes.Status201Created, created);
+            var result = await _requests.CreateAsync(dto, HttpContext.RequestAborted);
+            return result.Created ? StatusCode(StatusCodes.Status201Created, result.Request) : Ok(result.Request);
         }
         catch (StockRequestException ex)
         {
@@ -46,16 +47,38 @@ public class StockRequestsController : ControllerBase
         }
     }
 
-    // GET api-pos/stock-requests?locationId=&variationId=
+    // GET api-pos/stock-requests?locationId=&variationId=&open=true
     [HttpGet]
     [ProducesResponseType(typeof(List<StockRequestResponseDto>), StatusCodes.Status200OK)]
-    public async Task<IActionResult> List([FromQuery] int? locationId, [FromQuery] int? variationId)
+    public async Task<IActionResult> List([FromQuery] int? locationId, [FromQuery] int? variationId, [FromQuery] bool open = false)
     {
         if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
         if (locationId.HasValue && PosRoleAuthorization.RequireLocationAccess(HttpContext, locationId) is { } locationDenied)
             return locationDenied;
 
-        return Ok(await _requests.ListAsync(locationId, variationId, HttpContext.RequestAborted));
+        return Ok(await _requests.ListAsync(locationId, variationId, open, HttpContext.RequestAborted));
+    }
+
+    // PUT api-pos/stock-requests/{requestId}/cancel — the branch withdraws it before IMS decides.
+    [HttpPut("{requestId}/cancel")]
+    [RateLimit(WindowSeconds = 5, MaxRequests = 1, Message = "This request is already being cancelled. Please wait a moment.")]
+    [ProducesResponseType(typeof(StockRequestResponseDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    public async Task<IActionResult> Cancel(string requestId, [FromBody] CancelStockRequestDto? dto)
+    {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
+
+        try
+        {
+            return Ok(await _requests.CancelAsync(requestId, dto ?? new CancelStockRequestDto(), HttpContext.RequestAborted));
+        }
+        catch (StockRequestException ex)
+        {
+            return Fail(ex.Status, ex.Message);
+        }
     }
 
     // PUT api-pos/stock-requests/{requestId}/status — IMS only (service key).

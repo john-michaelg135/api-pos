@@ -95,6 +95,21 @@ public static class StockAudit
         Metadata = RequestMetadata(request, "stock_request_decided", previousStatus),
     };
 
+    /// <summary>The branch withdrew a request before IMS decided. Cancelled once (the status gate refuses a second).</summary>
+    public static AuditEvent StockRequestCancelled(StockRequest request, string item, string? branch, string previousStatus) => new()
+    {
+        Module = PosModules.StockManagement,
+        Action = AuditActions.Updated,
+        Target = RequestTarget(request),
+        Describe = who => $"{who} cancelled the request for {request.Quantity} × {item}{OrderAudit.AtBranch(branch, request.LocationId)} ({request.RequestId}).",
+        OccurredAt = request.CancelledAt ?? DateTime.UtcNow,
+        OperationId = $"stock-request-cancelled:{request.RequestId}",
+        Metadata = new Dictionary<string, object?>(RequestMetadata(request, "stock_request_cancelled", previousStatus))
+        {
+            ["cancel_reason"] = request.CancelReason,
+        },
+    };
+
     private static AuditTarget RequestTarget(StockRequest request) =>
         new("stock_request", request.RequestId, $"Stock request {request.RequestId}");
 
