@@ -12,11 +12,13 @@ public class ProductCatalogService : IProductCatalogService
 {
     private readonly PosDbContext _db;
     private readonly IAuditLogService _auditLogService;
+    private readonly IPosStaffIdentity? _staff;
 
-    public ProductCatalogService(PosDbContext db, IAuditLogService auditLogService)
+    public ProductCatalogService(PosDbContext db, IAuditLogService auditLogService, IPosStaffIdentity? staff = null)
     {
         _db = db;
         _auditLogService = auditLogService;
+        _staff = staff;
     }
 
     // ────────────────────────────────────────────────────
@@ -208,6 +210,22 @@ public class ProductCatalogService : IProductCatalogService
 
         // Find current active price and archive it
         var currentActivePrice = variation.ProductPrices.FirstOrDefault(pp => pp.IsActive);
+
+        // Saving the same price again is not a change; keep the history free of no-op entries.
+        if (currentActivePrice != null && currentActivePrice.Price == dto.Price)
+        {
+            return new VariationResponseDto
+            {
+                VariationId = variation.VariationId,
+                VariationName = variation.VariationName,
+                IsActive = variation.IsActive,
+                CurrentPrice = currentActivePrice.Price
+            };
+        }
+
+        // Who changed it is the signed-in staff member, not a number the client sends.
+        var setBy = (_staff is null ? null : await _staff.CurrentStaffIdAsync()) ?? dto.SetBy;
+
         if (currentActivePrice != null)
         {
             // 1. Mark old price as inactive
@@ -233,7 +251,7 @@ public class ProductCatalogService : IProductCatalogService
             VariationId = variationId,
             Price = dto.Price,
             IsActive = true,
-            SetBy = dto.SetBy,
+            SetBy = setBy,
             EffectiveFrom = now,
             CreatedAt = now
         };
@@ -288,6 +306,79 @@ public class ProductCatalogService : IProductCatalogService
             .ToListAsync();
 
         return history;
+    }
+
+    /// <summary>
+    /// Every price each variation has had, from the saved price rows (a price change keeps the old
+    /// row and adds a new one). ₱0 placeholders for unpriced variations are left out. Newest first.
+    /// </summary>
+    public async Task<List<PriceChangeDto>> GetPriceChangesAsync(
+        int? productId,
+        int? variationId,
+        IReadOnlyCollection<int>? variationIds = null)
+    {
+        var query = _db.ProductPrices
+            .AsNoTracking()
+            .Where(pp => pp.Price > 0);
+        if (variationId.HasValue) query = query.Where(pp => pp.VariationId == variationId.Value);
+        if (productId.HasValue) query = query.Where(pp => pp.ProductVariation.ProductId == productId.Value);
+        if (variationIds is not null) query = query.Where(pp => variationIds.Contains(pp.VariationId));
+
+        var rows = await query
+            .Select(pp => new
+            {
+                pp.PriceId,
+                pp.VariationId,
+                pp.Price,
+                pp.IsActive,
+                pp.SetBy,
+                pp.EffectiveFrom,
+                pp.ProductVariation.ProductId,
+                pp.ProductVariation.VariationName,
+                ProductName = pp.ProductVariation.Product.ProductName,
+            })
+            .ToListAsync();
+
+        var staffIds = rows.Where(r => r.SetBy is > 0).Select(r => r.SetBy!.Value).Distinct().ToArray();
+        var names = _staff is null || staffIds.Length == 0
+            ? new Dictionary<int, string>()
+            : await _staff.NamesAsync(staffIds);
+
+        var changes = new List<PriceChangeDto>();
+        foreach (var timeline in rows.GroupBy(r => r.VariationId))
+        {
+            var ordered = timeline.OrderBy(r => r.EffectiveFrom).ThenBy(r => r.PriceId).ToList();
+            for (var i = 0; i < ordered.Count; i++)
+            {
+                var row = ordered[i];
+                decimal? previous = i > 0 ? ordered[i - 1].Price : null;
+                var next = i + 1 < ordered.Count ? ordered[i + 1] : null;
+                changes.Add(new PriceChangeDto
+                {
+                    PriceId = row.PriceId,
+                    ProductId = row.ProductId,
+                    ProductName = row.ProductName,
+                    VariationId = row.VariationId,
+                    VariationName = row.VariationName,
+                    Price = row.Price,
+                    PreviousPrice = previous,
+                    Change = previous.HasValue ? row.Price - previous.Value : null,
+                    ChangePercent = previous is > 0
+                        ? Math.Round((row.Price - previous.Value) / previous.Value * 100m, 2)
+                        : null,
+                    EffectiveFrom = row.EffectiveFrom,
+                    EffectiveTo = next?.EffectiveFrom,
+                    IsCurrent = row.IsActive && next is null,
+                    SetBy = row.SetBy,
+                    SetByName = row.SetBy is { } by ? names.GetValueOrDefault(by) : null,
+                });
+            }
+        }
+
+        return changes
+            .OrderByDescending(c => c.EffectiveFrom)
+            .ThenByDescending(c => c.PriceId)
+            .ToList();
     }
 
     // ────────────────────────────────────────────────────

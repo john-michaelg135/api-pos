@@ -31,6 +31,12 @@ public class StockAdjustment
 
     public DateTime CreatedAt { get; set; }
 
+    // System loss only: why the units became unsellable (Expired, Damaged, Mishandled, Other)
+    public string? LossReason { get; set; }
+
+    // System loss only: the selling price at the time, so the loss can be valued later
+    public decimal? UnitPrice { get; set; }
+
     // Navigation
     public ProductVariation? Variation { get; set; }
     public Location? Location { get; set; }

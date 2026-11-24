@@ -265,6 +265,8 @@ public partial class PosDbContext : DbContext
             entity.Property(e => e.Quantity).IsRequired();
             entity.Property(e => e.Reason).IsRequired().HasColumnType("text");
             entity.Property(e => e.Status).IsRequired().HasMaxLength(30).HasDefaultValue("PendingApproval");
+            entity.Property(e => e.LossReason).HasMaxLength(30);
+            entity.Property(e => e.UnitPrice).HasColumnType("numeric(10,2)");
             entity.Property(e => e.CreatedAt).IsRequired().HasDefaultValueSql("CURRENT_TIMESTAMP");
             // SubmittedBy, ApprovedBy reference users in auth_db — stored as plain int, no FK constraint
 
@@ -509,6 +511,8 @@ public partial class PosDbContext : DbContext
             entity.Property(e => e.SuccessfulSalesAmount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.ApprovedRefundAmount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.ExpectedCash).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.CashTenderedAmount).HasColumnType("numeric(12,2)");
+            entity.Property(e => e.ChangeGivenAmount).HasColumnType("numeric(12,2)");
             entity.Property(e => e.AutoClosed).IsRequired();
 
             entity.HasIndex(e => new { e.AuthUserId, e.CashierName, e.LocationId, e.BusinessDate }).IsUnique();

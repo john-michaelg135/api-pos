@@ -48,6 +48,26 @@ public static class StockAudit
         Metadata = AdjustmentMetadata(adjustment, "adjustment_approved", previousStatus),
     };
 
+    /// <summary>A manager wrote off unsellable units; recorded once, so the id is its identity.</summary>
+    public static AuditEvent LossRecorded(StockAdjustment loss, string item, string? branch) => new()
+    {
+        Module = PosModules.StockManagement,
+        Action = AuditActions.Created,
+        Target = new AuditTarget("stock_loss", Id(loss.AdjustmentId), $"Stock loss #{loss.AdjustmentId}"),
+        Describe = who => $"{who} recorded a system loss of {Math.Abs(loss.Quantity)} × {item} ({(loss.LossReason ?? "Other").ToLowerInvariant()}){OrderAudit.AtBranch(branch, loss.LocationId)}.",
+        OccurredAt = loss.CreatedAt,
+        OperationId = $"stock-loss:{loss.AdjustmentId}",
+        Metadata = new Dictionary<string, object?>
+        {
+            ["operation"] = "stock_loss_recorded",
+            ["location_id"] = loss.LocationId,
+            ["variation_id"] = loss.VariationId,
+            ["quantity"] = Math.Abs(loss.Quantity),
+            ["loss_reason"] = loss.LossReason,
+            ["unit_price"] = loss.UnitPrice,
+        },
+    };
+
     public static string ItemLabel(ProductVariation? variation)
     {
         var product = variation?.Product?.ProductName;

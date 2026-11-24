@@ -119,6 +119,22 @@ public class OrderEntryService : IOrderEntryService
         : string.Equals(paymentMethod?.Trim(), "GCash", StringComparison.OrdinalIgnoreCase) ? "GCash"
         : throw new InvalidOperationException("Payment must be Cash or GCash.");
 
+    /// <summary>
+    /// Cash handed over and change handed back for a cash sale. Without a tender the customer paid
+    /// the exact amount. A tender below the total is refused.
+    /// </summary>
+    public static (decimal? Tendered, decimal? Change) CashTender(decimal? amountTendered, decimal totalAmount)
+    {
+        var tendered = Math.Round(amountTendered ?? totalAmount, 2);
+        if (tendered < totalAmount)
+            throw new InvalidOperationException("Amount paid is not enough. Cash payments must cover the full order total.");
+        if (tendered > MaxCashTendered)
+            throw new InvalidOperationException("Amount paid is unrealistically large. Please check the amount.");
+        return (tendered, tendered - totalAmount);
+    }
+
+    private const decimal MaxCashTendered = 10_000_000m;
+
     public async Task<OrderResponseDto> CreateOrderAsync(CreateOrderDto dto)
     {
         var now = DateTime.UtcNow;
@@ -155,6 +171,38 @@ public class OrderEntryService : IOrderEntryService
         // confirming, like cash, so the sale completes immediately; no Xendit invoice is created.
         var isGcash = string.Equals(dto.PaymentMethod, "GCash", StringComparison.OrdinalIgnoreCase);
 
+        // Price the cart before creating the order (price snapshot, POS-004), so a short cash
+        // tender is rejected without leaving an orphan order behind.
+        decimal totalAmount = 0;
+        var pricedItems = new List<(int VariationId, int Quantity, decimal UnitPrice, decimal Subtotal)>();
+        foreach (var cartItem in dto.Items)
+        {
+            var activePrice = await _db.ProductPrices
+                .AsNoTracking()
+                .Where(pp => pp.VariationId == cartItem.VariationId && pp.IsActive && pp.Price > 0)
+                .FirstOrDefaultAsync();
+
+            if (activePrice == null)
+                throw new InvalidOperationException(
+                    $"No active price found for variation ID {cartItem.VariationId}");
+
+            var finalUnitPrice = activePrice.Price;
+
+            // US-POS-032: Senior/PWD discount formula (Strip 12% VAT, deduct 20%)
+            if (dto.ApplyPwdDiscount)
+            {
+                finalUnitPrice = Math.Round((activePrice.Price / 1.12m) * 0.80m, 2);
+            }
+
+            var subtotal = finalUnitPrice * cartItem.Quantity;
+            totalAmount += subtotal;
+            pricedItems.Add((cartItem.VariationId, cartItem.Quantity, finalUnitPrice, subtotal));
+        }
+
+        // The server works out the change from its own total, so the Money Audit's change
+        // figure always matches what left the drawer. No tender recorded means exact cash.
+        var (amountTendered, changeAmount) = isGcash ? ((decimal?)null, (decimal?)null) : CashTender(dto.AmountTendered, totalAmount);
+
         // Create the order
         var order = new Order
         {
@@ -166,9 +214,9 @@ public class OrderEntryService : IOrderEntryService
             PaymentMethod = dto.PaymentMethod,
             PaymentStatus = "Paid",
             OrderStatus = "Completed",
-            TotalAmount = 0,              // Will be calculated below
-            AmountTendered = isGcash ? null : dto.AmountTendered,
-            ChangeAmount = isGcash ? null : dto.ChangeAmount,
+            TotalAmount = totalAmount,
+            AmountTendered = amountTendered,
+            ChangeAmount = changeAmount,
             CreatedAt = now,
             UpdatedAt = now,
             ContactPerson = dto.ContactPerson,
@@ -190,56 +238,18 @@ public class OrderEntryService : IOrderEntryService
         await InsertOrderWithUniqueNumberAsync(order, now);
 
 
-        // Create order items with price snapshots
-        decimal totalAmount = 0;
-        var orderItems = new List<OrderItem>();
-
-        foreach (var cartItem in dto.Items)
+        // Order items carry the price snapshot taken above (POS-004).
+        var orderItems = pricedItems.Select(p => new OrderItem
         {
-            // Get the active price for this variation (snapshot it!)
-            var activePrice = await _db.ProductPrices
-                .AsNoTracking()
-                .Where(pp => pp.VariationId == cartItem.VariationId && pp.IsActive && pp.Price > 0)
-                .FirstOrDefaultAsync();
-
-            if (activePrice == null)
-                throw new InvalidOperationException(
-                    $"No active price found for variation ID {cartItem.VariationId}");
-
-            var baseUnitPrice = activePrice.Price;
-            var finalUnitPrice = baseUnitPrice;
-
-            // US-POS-032: Senior/PWD discount formula (Strip 12% VAT, deduct 20%)
-            if (dto.ApplyPwdDiscount)
-            {
-                finalUnitPrice = Math.Round((baseUnitPrice / 1.12m) * 0.80m, 2);
-            }
-
-            var subtotal = finalUnitPrice * cartItem.Quantity;
-            totalAmount += subtotal;
-
-            var orderItem = new OrderItem
-            {
-                OrderId = order.OrderId,
-                VariationId = cartItem.VariationId,
-                Quantity = cartItem.Quantity,
-                UnitPrice = finalUnitPrice,        // Price snapshot at checkout (POS-004)
-                Subtotal = subtotal,
-                CreatedAt = now
-            };
-
-            orderItems.Add(orderItem);
-        }
+            OrderId = order.OrderId,
+            VariationId = p.VariationId,
+            Quantity = p.Quantity,
+            UnitPrice = p.UnitPrice,
+            Subtotal = p.Subtotal,
+            CreatedAt = now
+        }).ToList();
 
         await _db.OrderItems.AddRangeAsync(orderItems);
-
-
-
-        // Update total amount and tracking properties
-
-        order.TotalAmount = totalAmount;
-        _db.Orders.Update(order);
-
         await _db.SaveChangesAsync();
 
         await _db.Payments.AddAsync(new Payment
@@ -558,8 +568,7 @@ public class OrderEntryService : IOrderEntryService
             pricedItems.Add((cartItem, unitPrice, subtotal));
         }
 
-        if (isCash && (dto.AmountTendered ?? 0) < totalAmount)
-            throw new InvalidOperationException("Amount paid is not enough. Cash payments must cover the full order total.");
+        var (amountTendered, changeAmount) = isCash ? CashTender(dto.AmountTendered, totalAmount) : ((decimal?)null, (decimal?)null);
 
         // Cash and full GCash are settled up front and go straight to Paid (ready for shipment).
         // A GCash downpayment keeps the order in Processing until the balance is confirmed.
@@ -585,8 +594,8 @@ public class OrderEntryService : IOrderEntryService
             PaymentStatus = isPartial ? "Partial" : (isCash || isGcash ? "Paid" : "Pending"),
             OrderStatus = isPartial || !(isCash || isGcash) ? "Processing" : "Paid",
             TotalAmount = totalAmount,
-            AmountTendered = isCash ? dto.AmountTendered : null,
-            ChangeAmount = isCash ? dto.AmountTendered - totalAmount : null,
+            AmountTendered = amountTendered,
+            ChangeAmount = changeAmount,
             CreatedAt = now,
             UpdatedAt = now
         };

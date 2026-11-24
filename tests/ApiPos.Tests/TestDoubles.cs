@@ -85,7 +85,7 @@ public sealed class NoopInventory : IInventoryService
     public Task<List<StockResponseDto>> GetAllStockAsync() => throw new NotSupportedException();
     public Task<List<StockMovementResponseDto>> GetStockMovementsAsync(int? locationId, DateTime? from, DateTime? to) => throw new NotSupportedException();
     public Task<List<LowStockAlertDto>> GetLowStockAlertsAsync() => throw new NotSupportedException();
-    public Task DeductStockAsync(int variationId, int locationId, int quantity, int? orderId = null, string movementType = "Sale", string? reference = null) => Task.CompletedTask;
+    public Task DeductStockAsync(int variationId, int locationId, int quantity, int? orderId = null, string movementType = "Sale", string? reference = null, string? notes = null) => Task.CompletedTask;
     public Task RestoreStockAsync(int variationId, int locationId, int quantity, int? orderId = null, string movementType = "Refund", string? reference = null) => Task.CompletedTask;
     public Task RecordStockLossAsync(int variationId, int locationId, int quantity, int? orderId = null, string? reference = null, string? notes = null) => Task.CompletedTask;
     public Task<StockAdjustmentResponseDto> SubmitStockAdjustmentAsync(StockAdjustmentRequestDto dto) => throw new NotSupportedException();

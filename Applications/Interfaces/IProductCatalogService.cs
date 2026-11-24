@@ -20,6 +20,9 @@ public interface IProductCatalogService
     // POS-004: Price history
     Task<List<PriceHistoryResponseDto>> GetPriceHistoryAsync(int variationId);
 
+    // Price history across changes: every price a variation has had, newest first.
+    Task<List<PriceChangeDto>> GetPriceChangesAsync(int? productId, int? variationId, IReadOnlyCollection<int>? variationIds = null);
+
     // SCMS Module 1: create or update a product and its variations from SCMS
     Task<SyncProductResultDto> SyncProductFromScmsAsync(SyncProductDto dto);
 }

@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Mvc;
 using Applications.Interfaces;
 using Api.Contracts.ProductCatalog;
 using Api.Middlewares;
+using Infrastructures.Persistence;
+using Microsoft.EntityFrameworkCore;
 
 namespace Api.Controllers;
 
@@ -149,6 +151,35 @@ public class ProductCatalogController : ControllerBase
     }
 
     // ── POS-004: Price history ──
+
+    // GET api-pos/product-catalog/price-history?productId=&variationId=
+    // Every price change across the catalog, newest first. Branch staff only see the items
+    // their branch carries (a stock record there); the owner sees everything.
+    [HttpGet("price-history")]
+    [ProducesResponseType(typeof(List<PriceChangeDto>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetPriceChanges(
+        [FromQuery] int? productId,
+        [FromQuery] int? variationId,
+        [FromServices] PosDbContext db)
+    {
+        var user = HttpContext.GetCurrentUser();
+        if (user is null) return Unauthorized(new { message = "A valid POS session is required." });
+
+        int[]? carried = null;
+        if (!PosRoleAuthorization.IsAdministrator(user))
+        {
+            var locationIds = user.LocationIds;
+            carried = await db.Stocks
+                .AsNoTracking()
+                .Where(s => locationIds.Contains(s.LocationId))
+                .Select(s => s.VariationId)
+                .Distinct()
+                .ToArrayAsync();
+        }
+
+        var changes = await _productCatalogService.GetPriceChangesAsync(productId, variationId, carried);
+        return Ok(changes);
+    }
 
     // GET api-pos/product-catalog/variations/{variationId}/price-history
     [HttpGet("variations/{variationId:int}/price-history")]

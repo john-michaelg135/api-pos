@@ -77,6 +77,51 @@ public class StockAdjustmentController : ControllerBase
         }
     }
 
+    // ── System loss: managers write off unsellable stock (expired, damaged, mishandled) ──
+
+    // POST api-pos/inventory/adjustments/losses
+    [HttpPost("losses")]
+    [RateLimit(WindowSeconds = 5, MaxRequests = 1, Message = "This loss is already being recorded. Please wait a moment.")]
+    [ProducesResponseType(typeof(StockLossResponseDto), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> RecordStockLoss([FromBody] RecordStockLossDto dto)
+    {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
+        if (dto == null) return BadRequest("Stock loss data is required.");
+        if (PosRoleAuthorization.RequireLocationAccess(HttpContext, dto.LocationId) is { } locationDenied)
+            return locationDenied;
+
+        try
+        {
+            var loss = await _adjustmentService.RecordStockLossAsync(dto);
+            return CreatedAtAction(nameof(GetStockLosses), new { locationId = loss.LocationId }, loss);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
+
+    // GET api-pos/inventory/adjustments/losses?locationId=&from=&to=
+    [HttpGet("losses")]
+    [ProducesResponseType(typeof(List<StockLossResponseDto>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetStockLosses(
+        [FromQuery] int? locationId,
+        [FromQuery] DateTime? from,
+        [FromQuery] DateTime? to)
+    {
+        if (PosRoleAuthorization.RequireManager(HttpContext) is { } denied) return denied;
+        if (locationId.HasValue
+            && PosRoleAuthorization.RequireLocationAccess(HttpContext, locationId) is { } locationDenied)
+            return locationDenied;
+
+        var losses = await _adjustmentService.GetStockLossesAsync(locationId, from, to);
+        var user = HttpContext.GetCurrentUser();
+        if (user != null && !PosRoleAuthorization.IsAdministrator(user))
+            losses = losses.Where(item => user.LocationIds.Contains(item.LocationId)).ToList();
+        return Ok(losses);
+    }
+
     // ── Supporting: List all adjustments for manager review ──
 
     // GET api-pos/inventory/adjustments

@@ -15,13 +15,15 @@ public class StockAdjustmentService : IStockAdjustmentService
     private readonly IInventoryService _inventoryService;
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly IAuditLogService _auditLogService;
+    private readonly IPosStaffIdentity _staff;
 
-    public StockAdjustmentService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor, IAuditLogService auditLogService)
+    public StockAdjustmentService(PosDbContext db, IInventoryService inventoryService, IHttpContextAccessor httpContextAccessor, IAuditLogService auditLogService, IPosStaffIdentity staff)
     {
         _db = db;
         _inventoryService = inventoryService;
         _httpContextAccessor = httpContextAccessor;
         _auditLogService = auditLogService;
+        _staff = staff;
     }
 
     // ────────────────────────────────────────────────────
@@ -147,7 +149,8 @@ public class StockAdjustmentService : IStockAdjustmentService
     public async Task<List<StockAdjustmentResponseDto>> GetAllAdjustmentsAsync()
     {
         var currentUser = _httpContextAccessor.HttpContext?.GetCurrentUser();
-        var query = _db.StockAdjustments.AsQueryable();
+        // System losses are listed on their own (GetStockLossesAsync).
+        var query = _db.StockAdjustments.Where(a => a.AdjustmentType != InventoryService.StockLossType);
 
         if (currentUser?.SubRole == "Cashier")
         {
@@ -167,6 +170,137 @@ public class StockAdjustmentService : IStockAdjustmentService
             a.Variation?.VariationName ?? string.Empty,
             a.Variation?.Product?.ProductName ?? string.Empty,
             a.Location?.LocationName ?? string.Empty)).ToList();
+    }
+
+    // ────────────────────────────────────────────────────
+    // System loss: a manager writes off units that can't be sold (expired, damaged,
+    // mishandled). The manager is the approver, so stock goes down straight away.
+    // ────────────────────────────────────────────────────
+
+    public async Task<StockLossResponseDto> RecordStockLossAsync(RecordStockLossDto dto)
+    {
+        if (dto.Quantity <= 0 || dto.Quantity > 10_000)
+            throw new InvalidOperationException("Quantity lost must be between 1 and 10,000.");
+
+        var reason = StockLossReasons.All.FirstOrDefault(r => string.Equals(r, dto.LossReason?.Trim(), StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException($"Reason must be one of: {string.Join(", ", StockLossReasons.All)}.");
+        var notes = string.IsNullOrWhiteSpace(dto.Notes) ? null : dto.Notes.Trim();
+        if (notes is { Length: > 500 })
+            throw new InvalidOperationException("Notes must not exceed 500 characters.");
+        if (reason == StockLossReasons.Other && notes is null)
+            throw new InvalidOperationException("Describe what happened when the reason is Other.");
+
+        var variation = await _db.ProductVariations
+            .Include(v => v.Product)
+            .FirstOrDefaultAsync(v => v.VariationId == dto.VariationId)
+            ?? throw new InvalidOperationException($"Product variation with ID {dto.VariationId} not found.");
+        var location = await _db.Locations.FindAsync(dto.LocationId)
+            ?? throw new InvalidOperationException($"Location with ID {dto.LocationId} not found.");
+
+        var onHand = await _db.Stocks
+            .AsNoTracking()
+            .Where(s => s.VariationId == dto.VariationId && s.LocationId == dto.LocationId)
+            .Select(s => (int?)s.Quantity)
+            .FirstOrDefaultAsync() ?? 0;
+        if (onHand < dto.Quantity)
+            throw new InvalidOperationException($"Only {onHand} unit(s) are in stock at {location.LocationName}; you can't write off {dto.Quantity}.");
+
+        // The selling price at the time, so the report can say how much the loss was worth.
+        var unitPrice = await _db.ProductPrices
+            .AsNoTracking()
+            .Where(p => p.VariationId == dto.VariationId && p.IsActive && p.Price > 0)
+            .Select(p => (decimal?)p.Price)
+            .FirstOrDefaultAsync();
+
+        var staffId = await _staff.CurrentStaffIdAsync();
+        var now = DateTime.UtcNow;
+        var loss = new StockAdjustment
+        {
+            VariationId = dto.VariationId,
+            LocationId = dto.LocationId,
+            AdjustmentType = InventoryService.StockLossType,
+            Quantity = -dto.Quantity,
+            Reason = notes is null ? reason : $"{reason}: {notes}",
+            LossReason = reason,
+            UnitPrice = unitPrice,
+            Status = "Approved",
+            SubmittedBy = staffId ?? 0,
+            ApprovedBy = staffId,
+            ApprovedAt = now,
+            CreatedAt = now,
+        };
+
+        // The loss record and the stock deduction land together or not at all.
+        await using var transaction = _db.Database.IsRelational() ? await _db.Database.BeginTransactionAsync() : null;
+        await _db.StockAdjustments.AddAsync(loss);
+        await _db.SaveChangesAsync();
+        await _inventoryService.DeductStockAsync(
+            dto.VariationId,
+            dto.LocationId,
+            dto.Quantity,
+            orderId: null,
+            movementType: InventoryService.StockLossType,
+            reference: $"Stock loss #{loss.AdjustmentId}",
+            notes: loss.Reason);
+        if (transaction is not null) await transaction.CommitAsync();
+
+        await _auditLogService.RecordAsync(StockAudit.LossRecorded(loss, StockAudit.ItemLabel(variation), location.LocationName));
+
+        var names = staffId.HasValue ? await _staff.NamesAsync([staffId.Value]) : new Dictionary<int, string>();
+        return MapLoss(loss, variation, location.LocationName, names);
+    }
+
+    public async Task<List<StockLossResponseDto>> GetStockLossesAsync(int? locationId, DateTime? from, DateTime? to)
+    {
+        var query = _db.StockAdjustments
+            .AsNoTracking()
+            .Include(a => a.Variation)
+                .ThenInclude(v => v!.Product)
+            .Include(a => a.Location)
+            .Where(a => a.AdjustmentType == InventoryService.StockLossType);
+
+        if (locationId.HasValue) query = query.Where(a => a.LocationId == locationId.Value);
+        if (from.HasValue) query = query.Where(a => a.CreatedAt >= from.Value);
+        if (to.HasValue) query = query.Where(a => a.CreatedAt < to.Value);
+
+        var losses = await query
+            .OrderByDescending(a => a.CreatedAt)
+            .Take(1000)
+            .ToListAsync();
+
+        var staffIds = losses.Select(a => a.ApprovedBy ?? a.SubmittedBy).Where(id => id > 0).Distinct().ToArray();
+        var names = staffIds.Length == 0 ? new Dictionary<int, string>() : await _staff.NamesAsync(staffIds);
+
+        return losses
+            .Select(a => MapLoss(a, a.Variation, a.Location?.LocationName ?? string.Empty, names))
+            .ToList();
+    }
+
+    private static StockLossResponseDto MapLoss(
+        StockAdjustment a,
+        ProductVariation? variation,
+        string locationName,
+        IReadOnlyDictionary<int, string> names)
+    {
+        var quantity = Math.Abs(a.Quantity);
+        var reason = a.LossReason ?? StockLossReasons.Other;
+        var prefix = $"{reason}: ";
+        return new StockLossResponseDto
+        {
+            LossId = a.AdjustmentId,
+            VariationId = a.VariationId,
+            VariationName = variation?.VariationName ?? string.Empty,
+            ProductName = variation?.Product?.ProductName ?? string.Empty,
+            LocationId = a.LocationId,
+            LocationName = locationName,
+            Quantity = quantity,
+            LossReason = reason,
+            Notes = a.Reason.StartsWith(prefix, StringComparison.Ordinal) ? a.Reason[prefix.Length..] : null,
+            UnitPrice = a.UnitPrice,
+            LossValue = a.UnitPrice * quantity,
+            RecordedByName = names.GetValueOrDefault(a.ApprovedBy ?? a.SubmittedBy),
+            RecordedAt = a.CreatedAt,
+        };
     }
 
     private static StockAdjustmentResponseDto MapToResponse(
