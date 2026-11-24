@@ -28,6 +28,12 @@ public class StartingCash
     public decimal? ApprovedRefundAmount { get; set; }
     public decimal? ExpectedCash { get; set; }
 
+    /// <summary>Cash customers handed over for cash sales in the shift (amount tendered).</summary>
+    public decimal? CashTenderedAmount { get; set; }
+
+    /// <summary>Change handed back from the drawer for those sales. Tendered less change is the cash sales.</summary>
+    public decimal? ChangeGivenAmount { get; set; }
+
     /// <summary>
     /// True when the system closed the shift at the end of its business day because no
     /// cashier ended it; EndShiftAmount is then empty, as no cash was counted.

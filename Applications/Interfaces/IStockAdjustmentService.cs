@@ -12,4 +12,8 @@ public interface IStockAdjustmentService
 
     // Supporting: get all pending/processed adjustments for manager review
     Task<List<StockAdjustmentResponseDto>> GetAllAdjustmentsAsync();
+
+    // System loss: a manager writes off unsellable units (expired, damaged...). Applied immediately.
+    Task<StockLossResponseDto> RecordStockLossAsync(RecordStockLossDto dto);
+    Task<List<StockLossResponseDto>> GetStockLossesAsync(int? locationId, DateTime? from, DateTime? to);
 }

@@ -17,7 +17,7 @@ public interface IInventoryService
     Task<List<LowStockAlertDto>> GetLowStockAlertsAsync();
 
     // POS-011: Auto deduct stock on order confirm (called internally)
-    Task DeductStockAsync(int variationId, int locationId, int quantity, int? orderId = null, string movementType = "Sale", string? reference = null);
+    Task DeductStockAsync(int variationId, int locationId, int quantity, int? orderId = null, string movementType = "Sale", string? reference = null, string? notes = null);
 
     // POS-017: Restore stock when a refund is approved (inverse of deduct)
     Task RestoreStockAsync(int variationId, int locationId, int quantity, int? orderId = null, string movementType = "Refund", string? reference = null);

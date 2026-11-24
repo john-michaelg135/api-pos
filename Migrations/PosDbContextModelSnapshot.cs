@@ -1024,10 +1024,16 @@ namespace api_pos.Migrations
                     b.Property<DateOnly>("BusinessDate")
                         .HasColumnType("date");
 
+                    b.Property<decimal?>("CashTenderedAmount")
+                        .HasColumnType("numeric(12,2)");
+
                     b.Property<string>("CashierName")
                         .IsRequired()
                         .HasMaxLength(150)
                         .HasColumnType("character varying(150)");
+
+                    b.Property<decimal?>("ChangeGivenAmount")
+                        .HasColumnType("numeric(12,2)");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -1143,6 +1149,10 @@ namespace api_pos.Migrations
                     b.Property<int>("LocationId")
                         .HasColumnType("integer");
 
+                    b.Property<string>("LossReason")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
                     b.Property<int>("Quantity")
                         .HasColumnType("integer");
 
@@ -1159,6 +1169,9 @@ namespace api_pos.Migrations
 
                     b.Property<int>("SubmittedBy")
                         .HasColumnType("integer");
+
+                    b.Property<decimal?>("UnitPrice")
+                        .HasColumnType("numeric(10,2)");
 
                     b.Property<int>("VariationId")
                         .HasColumnType("integer");

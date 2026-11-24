@@ -305,7 +305,8 @@ private readonly IAuditLogService _auditLogService;
         int quantity,
         int? orderId = null,
         string movementType = "Sale",
-        string? reference = null)
+        string? reference = null,
+        string? notes = null)
     {
         var stock = await _db.Stocks
             .FirstOrDefaultAsync(s => s.VariationId == variationId && s.LocationId == locationId);
@@ -326,7 +327,8 @@ private readonly IAuditLogService _auditLogService;
             -quantity,
             movementType,
             reference ?? (orderId.HasValue ? $"Order #{orderId.Value}" : null),
-            orderId);
+            orderId,
+            notes);
         await _db.SaveChangesAsync();
     }
 
@@ -521,6 +523,8 @@ private readonly IAuditLogService _auditLogService;
             .ToListAsync();
 
         movements.AddRange(legacyAdjustments
+            // A recorded system loss has its own StockLoss movement.
+            .Where(adjustment => adjustment.AdjustmentType != StockLossType)
             .Where(adjustment => !movements.Any(m =>
                 m.MovementType == "Adjustment"
                 && m.LocationId == adjustment.LocationId
@@ -662,6 +666,9 @@ private readonly IAuditLogService _auditLogService;
             .ThenByDescending(m => m.StockMovementId)
             .ToList();
     }
+
+    /// <summary>AdjustmentType and MovementType of a manager-recorded system loss.</summary>
+    public const string StockLossType = "StockLoss";
 
     private async Task AddMovementAsync(
         int variationId,
