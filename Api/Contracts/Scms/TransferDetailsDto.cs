@@ -8,6 +8,8 @@ public class TransferDetailsDto
     public List<TransferProductDto> Products { get; set; } = new();
     public DateTime TransferDate { get; set; }
     public string Status { get; set; } = string.Empty;
+    /// <summary>Optional: the POS stock request (e.g. SR-000123) this delivery fulfils.</summary>
+    public string? StockRequestId { get; set; }
 }
 
 public class LocationDto

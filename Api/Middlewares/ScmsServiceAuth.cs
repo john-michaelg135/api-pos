@@ -42,7 +42,20 @@ public static class ScmsServiceAuth
         if (HttpMethods.IsPost(method) && path.Equals("/api-pos/product-catalog/sync-product", StringComparison.OrdinalIgnoreCase))
             return true;
 
+        // Stock requests: IMS approves or rejects (PUT /api-pos/stock-requests/{requestId}/status).
+        // Exactly that shape, so no other stock-request route opens to the key.
+        if (HttpMethods.IsPut(method) && IsStockRequestStatusPath(path))
+            return true;
+
         return false;
+    }
+
+    private static bool IsStockRequestStatusPath(PathString path)
+    {
+        if (!path.StartsWithSegments("/api-pos/stock-requests", StringComparison.OrdinalIgnoreCase, out var rest))
+            return false;
+        var segments = (rest.Value ?? string.Empty).Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return segments.Length == 2 && string.Equals(segments[1], "status", StringComparison.OrdinalIgnoreCase);
     }
 
     public static Outcome TryAuthenticate(HttpContext context, IConfiguration configuration, ILogger logger)

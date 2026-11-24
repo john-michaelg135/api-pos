@@ -1,0 +1,33 @@
+namespace Api.Contracts.Scms;
+
+/// <summary>POS → IMS: POST /api/pos/stock-requests (STOCK-REQUEST-INTEGRATION.md §3.1).</summary>
+public class StockRequestDto
+{
+    public string RequestId { get; set; } = string.Empty;
+    public DestinationBranchDto Branch { get; set; } = new();
+    public List<StockRequestItemDto> Items { get; set; } = new();
+    public string Notes { get; set; } = string.Empty;
+    public string RequestedBy { get; set; } = string.Empty;
+    public string RequestedByName { get; set; } = string.Empty;
+    public DateTime RequestedAt { get; set; }
+}
+
+public class StockRequestItemDto
+{
+    public string Sku { get; set; } = string.Empty;
+    public string? ProductId { get; set; }
+    public string ProductName { get; set; } = string.Empty;
+    public string VariationName { get; set; } = string.Empty;
+    public int Quantity { get; set; }
+    public int CurrentStock { get; set; }
+}
+
+/// <summary>What IMS said to a submit. Accepted = 200/201, Refused = 4xx with a reason, Unreachable = retry later.</summary>
+public enum StockRequestSubmitOutcome
+{
+    Accepted,
+    Refused,
+    Unreachable,
+}
+
+public sealed record StockRequestSubmitResult(StockRequestSubmitOutcome Outcome, string? ImsRequestId, string? Message);

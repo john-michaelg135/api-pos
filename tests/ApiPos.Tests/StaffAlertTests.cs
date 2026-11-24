@@ -299,8 +299,9 @@ public class StaffAlertTests
             DestinationLocation = new DestinationBranchDto { BranchId = "8", BranchName = "Makati" },
             Products = [new TransferProductDto { ProductId = "p1", Sku = "UH-300", ProductName = "Ube Halaya", Quantity = 5 }],
         };
-        await controller.ReceiveTransferDetails(manifest);
-        await controller.ReceiveTransferDetails(manifest);
+        var stockRequests = new StockRequestService(w.Pos.Db, null!, w.Pos.Accessor, w.Pos.Audit, NullLogger.For<StockRequestService>());
+        await controller.ReceiveTransferDetails(manifest, stockRequests);
+        await controller.ReceiveTransferDetails(manifest, stockRequests);
 
         var alert = Assert.Single(w.Pos.Db.StaffAlerts);
         Assert.Equal(StaffAlertKinds.TransferArrived, alert.Kind);
