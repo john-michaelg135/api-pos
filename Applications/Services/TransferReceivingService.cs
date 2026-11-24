@@ -160,6 +160,20 @@ public class TransferReceivingService
         transfer.ReceivedAt = now;
         transfer.ReconciliationState = plan.All(p => p.Count.ReceivedQuantity == p.Item.Quantity) ? "Matched" : "Discrepancy";
         transfer.ReconciledAt = now;
+
+        // A delivery for a branch's stock request closes it, in the same save as the stock.
+        if (!string.IsNullOrWhiteSpace(transfer.StockRequestId))
+        {
+            var stockRequest = await _db.StockRequests.FirstOrDefaultAsync(r => r.RequestId == transfer.StockRequestId);
+            if (stockRequest is { Status: StockRequestStatuses.InTransit })
+            {
+                stockRequest.Status = StockRequestStatuses.Fulfilled;
+                stockRequest.ReceivedQuantity = plan
+                    .Where(p => string.Equals(p.Item.Sku?.Trim(), stockRequest.Sku, StringComparison.OrdinalIgnoreCase))
+                    .Sum(p => p.Count.ReceivedQuantity);
+                stockRequest.FulfilledAt = now;
+            }
+        }
         await _db.SaveChangesAsync();
 
         // One receipt per delivery, when the branch stock is saved. The SCMS confirmation below
@@ -196,6 +210,7 @@ public class TransferReceivingService
             ReceivedByName = user?.DisplayName ?? user?.Username ?? string.Empty,
             Status = "Completed",
             Notes = notes,
+            StockRequestId = transfer.StockRequestId,
             ReceivedProducts = plan.Select(p => new ReceivedProductDto
             {
                 ProductId = p.Item.ProductId,

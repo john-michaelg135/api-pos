@@ -333,11 +333,49 @@ public partial class PosDbContext : DbContext
             entity.Property(e => e.Status).IsRequired().HasMaxLength(30);
             entity.Property(e => e.StatusSyncState).IsRequired().HasMaxLength(20).HasDefaultValue("Pending");
             entity.Property(e => e.ReconciliationState).IsRequired().HasMaxLength(20).HasDefaultValue("Unreconciled");
+            entity.Property(e => e.StockRequestId).HasMaxLength(50);
 
             entity.HasMany(e => e.Items)
                 .WithOne(i => i.Transfer)
                 .HasForeignKey(i => i.TransferId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // ── StockRequest (branch → IMS; see STOCK-REQUEST-INTEGRATION.md) ──
+        modelBuilder.Entity<StockRequest>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).UseIdentityByDefaultColumn();
+            entity.Property(e => e.RequestId).IsRequired().HasMaxLength(50);
+            entity.HasIndex(e => e.RequestId).IsUnique();
+            entity.Property(e => e.Sku).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.Notes).IsRequired().HasMaxLength(500);
+            entity.Property(e => e.Status).IsRequired().HasMaxLength(20);
+            entity.Property(e => e.Remarks).HasMaxLength(500);
+            entity.Property(e => e.ImsRequestId).HasMaxLength(100);
+            entity.Property(e => e.RequestedBy).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.RequestedByName).IsRequired().HasMaxLength(150);
+            entity.Property(e => e.LastSendError).HasMaxLength(300);
+            entity.Property(e => e.DecidedBy).HasMaxLength(100);
+            entity.Property(e => e.DecidedByName).HasMaxLength(150);
+            entity.Property(e => e.TransferId).HasMaxLength(50);
+            entity.HasIndex(e => new { e.LocationId, e.Status });
+            entity.HasIndex(e => e.TransferId);
+            // One open request per variation per branch, even under a double submit.
+            entity.HasIndex(e => new { e.VariationId, e.LocationId })
+                .IsUnique()
+                .HasFilter("\"Status\" IN ('Sending', 'Submitted', 'Approved', 'In Transit')")
+                .HasDatabaseName("IX_StockRequests_OneOpenPerVariationBranch");
+
+            entity.HasOne(e => e.Variation)
+                .WithMany()
+                .HasForeignKey(e => e.VariationId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.Location)
+                .WithMany()
+                .HasForeignKey(e => e.LocationId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<StockTransferItem>(entity =>
@@ -539,6 +577,7 @@ public partial class PosDbContext : DbContext
     public DbSet<StockReceiving> StockReceivings { get; set; }
     public DbSet<StockTransfer> StockTransfers { get; set; }
     public DbSet<StockTransferItem> StockTransferItems { get; set; }
+    public DbSet<StockRequest> StockRequests { get; set; }
 
     // Sprint 3
     public DbSet<RefundRequest> RefundRequests { get; set; }

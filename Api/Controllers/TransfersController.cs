@@ -22,7 +22,7 @@ public class TransfersController : ControllerBase
     // POST api-pos/transfers
     [HttpPost]
     [ProducesResponseType(StatusCodes.Status200OK)]
-    public async Task<IActionResult> ReceiveTransferDetails([FromBody] TransferDetailsDto dto)
+    public async Task<IActionResult> ReceiveTransferDetails([FromBody] TransferDetailsDto dto, [FromServices] StockRequestService stockRequests)
     {
         if (await ValidateManifestAsync(dto) is { } problem)
         {
@@ -45,6 +45,14 @@ public class TransfersController : ControllerBase
             });
         }
 
+        // A delivery for a branch's stock request must match an Approved request (one delivery each).
+        // Checked after the redelivery return above, since the first copy already moved it In Transit.
+        var (requestProblem, stockRequest) = await stockRequests.CheckManifestAsync(dto, HttpContext?.RequestAborted ?? default);
+        if (requestProblem is not null)
+        {
+            return BadRequest(new { success = false, message = requestProblem });
+        }
+
         var transfer = new StockTransfer
         {
             TransferId = dto.TransferId,
@@ -65,6 +73,7 @@ public class TransfersController : ControllerBase
         };
 
         _db.StockTransfers.Add(transfer);
+        if (stockRequest is not null) StockRequestService.LinkTransfer(stockRequest, transfer);
         // Staff bell: the first saved manifest is the occurrence; a redelivery returns above.
         _db.RaiseStaffAlert(new Applications.StaffAlerts.StaffAlertIntent
         {

@@ -1,0 +1,459 @@
+using System.Net;
+using System.Text.Json;
+using Api.Contracts.Scms;
+using Api.Contracts.StockRequests;
+using Api.Controllers;
+using Api.Middlewares;
+using Applications.Services;
+using Domains.Entities;
+using Infrastructures.Externals;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+
+namespace ApiPos.Tests;
+
+/// <summary>Branch stock requests to IMS, end to end: submit, retry, decision, manifest link, receipt (STOCK-REQUEST-INTEGRATION.md §8).</summary>
+public class StockRequestTests
+{
+    private static readonly CurrentUserContext Manager = PosHarness.Staff("portal-user-42", "Mira Reyes", "Manager", 8);
+    private static readonly CurrentUserContext OtherBranchManager = PosHarness.Staff("portal-user-77", "Jo Santos", "Manager", 9);
+    private static readonly CurrentUserContext Ims = new()
+    {
+        Username = "scms-service",
+        DisplayName = "Supply Chain System",
+        Role = StockRequestsController.ServiceRole,
+        IsSuperUser = true,
+        Apps = ["SCMS"],
+    };
+
+    /// <summary>A fake IMS: answers with whatever <see cref="Respond"/> says and records every body.</summary>
+    private sealed class FakeIms : HttpMessageHandler
+    {
+        public Func<HttpRequestMessage, HttpResponseMessage> Respond { get; set; } = _ => Created("req_551");
+        public List<(string Path, string Body)> Calls { get; } = [];
+
+        public static HttpResponseMessage Created(string imsId) => new(HttpStatusCode.Created)
+        {
+            Content = new StringContent(
+                "{\"success\":true,\"data\":{\"requestId\":\"x\",\"imsRequestId\":\"" + imsId + "\",\"status\":\"Submitted\"}}"),
+        };
+
+        public static HttpResponseMessage Status(HttpStatusCode status, string body = "") => new(status) { Content = new StringContent(body) };
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var body = request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken);
+            Calls.Add((request.RequestUri!.AbsolutePath, body));
+            return Respond(request);
+        }
+    }
+
+    private sealed class Fixture : IDisposable
+    {
+        public PosHarness Pos { get; } = new();
+        public FakeIms Ims { get; } = new();
+        public ScmsApiClient Client { get; }
+        public StockRequestService Service { get; }
+
+        public Fixture()
+        {
+            Client = new ScmsApiClient(new HttpClient(Ims) { BaseAddress = new Uri("https://ims.test") });
+            Service = new StockRequestService(Pos.Db, Client, Pos.Accessor, Pos.Audit, NullLogger.For<StockRequestService>());
+
+            var db = Pos.Db;
+            db.Locations.Add(new Location { LocationId = 8, LocationName = "TriNoma Bazaar", LocationType = "Bazaar", CreatedAt = DateTime.UtcNow });
+            db.Locations.Add(new Location { LocationId = 9, LocationName = "Makati Store", CreatedAt = DateTime.UtcNow });
+            db.Locations.Add(new Location { LocationId = 1, LocationName = "Commissary", LocationType = "Commissary", CreatedAt = DateTime.UtcNow });
+            db.Products.Add(new Product { ProductId = 1, ProductName = "Ube Halaya", ProductCategory = "Spreads", ScmsProductId = "prod_018" });
+            db.ProductVariations.Add(new ProductVariation { VariationId = 11, ProductId = 1, VariationName = "UBE-HAL-250|Pouch|250g" });
+            db.ProductVariations.Add(new ProductVariation { VariationId = 12, ProductId = 1, VariationName = "Jar 500g" }); // no SKU
+            db.Stocks.Add(new Stock { VariationId = 11, LocationId = 8, Quantity = 5, UpdatedAt = DateTime.UtcNow });
+            db.PosUserLocations.Add(new PosUserLocation { AuthUserId = Manager.PortalUserId!, LocationId = 8, IsPrimary = true });
+            db.PosUserLocations.Add(new PosUserLocation { AuthUserId = OtherBranchManager.PortalUserId!, LocationId = 9, IsPrimary = true });
+            db.SaveChanges();
+            Pos.SignIn(Manager);
+        }
+
+        public StockRequestsController Controller(CurrentUserContext? user)
+        {
+            Pos.SignIn(user);
+            return new StockRequestsController(Service) { ControllerContext = new ControllerContext { HttpContext = Pos.Accessor.HttpContext! } };
+        }
+
+        public TransfersController Transfers()
+        {
+            Pos.SignIn(Ims_);
+            return new TransfersController(Pos.Db) { ControllerContext = new ControllerContext { HttpContext = Pos.Accessor.HttpContext! } };
+        }
+
+        private static CurrentUserContext Ims_ => StockRequestTests.Ims;
+
+        public Task<StockRequestResponseDto> Request(int quantity = 6) =>
+            Service.CreateAsync(new CreateStockRequestDto { VariationId = 11, LocationId = 8, Quantity = quantity, Notes = "Weekend bazaar, expecting double the usual sales." });
+
+        public Task<StockRequestResponseDto> Approve(string requestId, int quantity)
+        {
+            Pos.SignIn(StockRequestTests.Ims);
+            return Service.ApplyDecisionAsync(requestId, Decision("Approved", quantity));
+        }
+
+        public void Dispose() => Pos.Dispose();
+    }
+
+    private static StockRequestDecisionDto Decision(string status, int? quantity = null, string? remarks = null) => new()
+    {
+        Status = status,
+        ApprovedQuantity = quantity,
+        Remarks = remarks,
+        ImsRequestId = "req_551",
+        DecidedBy = "ims_u_12",
+        DecidedByName = "Mark Reyes",
+        DecidedAt = DateTime.UtcNow,
+    };
+
+    private static TransferDetailsDto Manifest(string? stockRequestId, string branchId = "8", string sku = "UBE-HAL-250", int quantity = 4) => new()
+    {
+        TransferId = "trans_900",
+        SourceLocation = new LocationDto { LocationId = "1", LocationName = "Commissary" },
+        DestinationLocation = new DestinationBranchDto { BranchId = branchId, BranchName = "TriNoma Bazaar" },
+        Products = [new TransferProductDto { ProductId = "prod_018", Sku = sku, ProductName = "Ube Halaya", Quantity = quantity }],
+        TransferDate = DateTime.UtcNow,
+        Status = "In Transit",
+        StockRequestId = stockRequestId,
+    };
+
+    // ── Submit ──
+
+    [Fact]
+    public async Task A_request_is_sent_to_IMS_and_marked_submitted()
+    {
+        using var f = new Fixture();
+
+        var created = await f.Request();
+
+        Assert.Equal("SR-000001", created.RequestId);
+        Assert.Equal(StockRequestStatuses.Submitted, created.Status);
+        var saved = Assert.Single(f.Pos.Db.StockRequests);
+        Assert.Equal("req_551", saved.ImsRequestId);
+        Assert.Equal(1, saved.SendAttempts);
+
+        var (path, body) = Assert.Single(f.Ims.Calls);
+        Assert.Equal("/api/pos/stock-requests", path);
+        using var json = JsonDocument.Parse(body);
+        var root = json.RootElement;
+        Assert.Equal("SR-000001", root.GetProperty("requestId").GetString());
+        Assert.Equal("8", root.GetProperty("branch").GetProperty("branchId").GetString());
+        var item = Assert.Single(root.GetProperty("items").EnumerateArray());
+        Assert.Equal("UBE-HAL-250", item.GetProperty("sku").GetString());
+        Assert.Equal("prod_018", item.GetProperty("productId").GetString());
+        Assert.Equal("Pouch 250g", item.GetProperty("variationName").GetString());
+        Assert.Equal(6, item.GetProperty("quantity").GetInt32());
+        Assert.Equal(5, item.GetProperty("currentStock").GetInt32());
+        Assert.Equal("portal-user-42", root.GetProperty("requestedBy").GetString());
+        Assert.Equal("Mira Reyes", root.GetProperty("requestedByName").GetString());
+    }
+
+    [Fact]
+    public async Task IMS_down_keeps_the_request_sending_and_the_sweep_delivers_it_later()
+    {
+        using var f = new Fixture();
+        f.Ims.Respond = _ => FakeIms.Status(HttpStatusCode.ServiceUnavailable);
+
+        var created = await f.Request();
+        Assert.Equal(StockRequestStatuses.Sending, created.Status);
+        Assert.Contains("503", created.LastSendError);
+
+        f.Ims.Respond = _ => FakeIms.Created("req_600");
+        Assert.Equal(1, await f.Service.RetryPendingAsync());
+
+        var saved = Assert.Single(f.Pos.Db.StockRequests);
+        Assert.Equal(StockRequestStatuses.Submitted, saved.Status);
+        Assert.Equal("req_600", saved.ImsRequestId);
+        Assert.Null(saved.LastSendError);
+        Assert.Equal(2, saved.SendAttempts);
+        // Every attempt carries the same requestId, so IMS can dedupe.
+        Assert.All(f.Ims.Calls, c => Assert.Contains("\"requestId\":\"SR-000001\"", c.Body));
+    }
+
+    [Fact]
+    public async Task The_sweep_gives_up_after_the_attempt_cap()
+    {
+        using var f = new Fixture();
+        f.Ims.Respond = _ => FakeIms.Status(HttpStatusCode.InternalServerError);
+        await f.Request();
+
+        for (var i = 0; i < StockRequestService.MaxSendAttempts + 3; i++) await f.Service.RetryPendingAsync();
+
+        Assert.Equal(StockRequestService.MaxSendAttempts, f.Ims.Calls.Count);
+        Assert.Equal(StockRequestStatuses.Sending, Assert.Single(f.Pos.Db.StockRequests).Status);
+    }
+
+    [Fact]
+    public async Task IMS_refusing_the_submit_rejects_it_with_the_reason()
+    {
+        using var f = new Fixture();
+        f.Ims.Respond = _ => FakeIms.Status(HttpStatusCode.BadRequest, """{"success":false,"message":"items[0].sku UBE-HAL-250 is not an IMS product."}""");
+
+        var created = await f.Request();
+
+        Assert.Equal(StockRequestStatuses.Rejected, created.Status);
+        Assert.Equal("items[0].sku UBE-HAL-250 is not an IMS product.", created.Remarks);
+
+        // Rejected is final, so the branch may ask again.
+        f.Ims.Respond = _ => FakeIms.Created("req_700");
+        Assert.Equal(StockRequestStatuses.Submitted, (await f.Request()).Status);
+    }
+
+    [Theory]
+    [InlineData(0, "Need more")]
+    [InlineData(-3, "Need more")]
+    [InlineData(10001, "Need more")]
+    [InlineData(5, "")]
+    [InlineData(5, "   ")]
+    [InlineData(5, "<script>alert(1)</script>")]
+    public async Task Bad_quantities_and_notes_are_refused(int quantity, string notes)
+    {
+        using var f = new Fixture();
+
+        var ex = await Assert.ThrowsAsync<StockRequestException>(() =>
+            f.Service.CreateAsync(new CreateStockRequestDto { VariationId = 11, LocationId = 8, Quantity = quantity, Notes = notes }));
+
+        Assert.Equal(400, ex.Status);
+        Assert.Empty(f.Pos.Db.StockRequests);
+        Assert.Empty(f.Ims.Calls);
+    }
+
+    [Fact]
+    public async Task The_commissary_and_items_without_a_SKU_cannot_be_requested()
+    {
+        using var f = new Fixture();
+        f.Pos.SignIn(Ims); // an administrator-level user, so branch access isn't what refuses it
+
+        var commissary = await Assert.ThrowsAsync<StockRequestException>(() =>
+            f.Service.CreateAsync(new CreateStockRequestDto { VariationId = 11, LocationId = 1, Quantity = 2, Notes = "x" }));
+        Assert.Contains("Commissary", commissary.Message);
+
+        var noSku = await Assert.ThrowsAsync<StockRequestException>(() =>
+            f.Service.CreateAsync(new CreateStockRequestDto { VariationId = 12, LocationId = 8, Quantity = 2, Notes = "x" }));
+        Assert.Contains("SKU", noSku.Message);
+    }
+
+    [Fact]
+    public async Task A_second_open_request_for_the_same_item_is_refused()
+    {
+        using var f = new Fixture();
+        await f.Request();
+
+        var ex = await Assert.ThrowsAsync<StockRequestException>(() => f.Request(2));
+
+        Assert.Equal(409, ex.Status);
+        Assert.Contains("SR-000001", ex.Message);
+        Assert.Single(f.Pos.Db.StockRequests);
+    }
+
+    [Fact]
+    public async Task Branch_staff_cannot_request_or_list_for_another_branch()
+    {
+        using var f = new Fixture();
+        await f.Request();
+
+        var create = await f.Controller(OtherBranchManager).Create(new CreateStockRequestDto { VariationId = 11, LocationId = 8, Quantity = 1, Notes = "x" });
+        Assert.Equal(403, Assert.IsAssignableFrom<ObjectResult>(create).StatusCode);
+
+        var list = await f.Controller(OtherBranchManager).List(null, 11);
+        Assert.Empty(Assert.IsType<List<StockRequestResponseDto>>(Assert.IsType<OkObjectResult>(list).Value));
+
+        var mine = await f.Controller(Manager).List(8, 11);
+        Assert.Single(Assert.IsType<List<StockRequestResponseDto>>(Assert.IsType<OkObjectResult>(mine).Value));
+    }
+
+    [Fact]
+    public async Task A_cashier_cannot_request_stock()
+    {
+        using var f = new Fixture();
+        var cashier = PosHarness.Staff("portal-cashier-7", "Ana Cruz", "Cashier", 8);
+
+        var result = await f.Controller(cashier).Create(new CreateStockRequestDto { VariationId = 11, LocationId = 8, Quantity = 1, Notes = "x" });
+
+        Assert.Equal(403, Assert.IsAssignableFrom<ObjectResult>(result).StatusCode);
+    }
+
+    // ── IMS decision ──
+
+    [Fact]
+    public async Task IMS_can_approve_part_of_a_request_and_a_repeat_changes_nothing()
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+
+        var controller = f.Controller(Ims);
+        var first = await controller.Decide(created.RequestId, Decision("Approved", 4, "Will ship with Thursday's run."));
+        Assert.IsType<OkObjectResult>(first);
+        var saved = Assert.Single(f.Pos.Db.StockRequests);
+        Assert.Equal(StockRequestStatuses.Approved, saved.Status);
+        Assert.Equal(4, saved.ApprovedQuantity);
+        Assert.Equal("Mark Reyes", saved.DecidedByName);
+
+        var again = await controller.Decide(created.RequestId, Decision("Approved", 4));
+        Assert.IsType<OkObjectResult>(again);
+
+        var reject = await controller.Decide(created.RequestId, Decision("Rejected", remarks: "Changed our mind"));
+        Assert.Equal(409, Assert.IsAssignableFrom<ObjectResult>(reject).StatusCode);
+        Assert.Equal(StockRequestStatuses.Approved, f.Pos.Db.StockRequests.Single().Status);
+    }
+
+    [Fact]
+    public async Task IMS_rejecting_needs_remarks_and_frees_the_item_for_a_new_request()
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+        var controller = f.Controller(Ims);
+
+        var noRemarks = await controller.Decide(created.RequestId, Decision("Rejected"));
+        Assert.Equal(400, Assert.IsAssignableFrom<ObjectResult>(noRemarks).StatusCode);
+
+        var ok = await controller.Decide(created.RequestId, Decision("Rejected", remarks: "No stock at the Commissary this week."));
+        Assert.IsType<OkObjectResult>(ok);
+
+        f.Pos.SignIn(Manager);
+        Assert.Equal(StockRequestStatuses.Submitted, (await f.Request(3)).Status);
+    }
+
+    [Theory]
+    [InlineData("Approved", 0)]
+    [InlineData("Approved", 7)]
+    [InlineData("Approved", null)]
+    [InlineData("Maybe", 3)]
+    public async Task Invalid_decisions_are_refused(string status, int? quantity)
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+
+        var result = await f.Controller(Ims).Decide(created.RequestId, Decision(status, quantity));
+
+        Assert.Equal(400, Assert.IsAssignableFrom<ObjectResult>(result).StatusCode);
+        Assert.Equal(StockRequestStatuses.Submitted, f.Pos.Db.StockRequests.Single().Status);
+    }
+
+    [Fact]
+    public async Task Decisions_need_the_IMS_identity_and_a_known_request()
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+
+        var staff = await f.Controller(Manager).Decide(created.RequestId, Decision("Approved", 6));
+        Assert.Equal(403, Assert.IsAssignableFrom<ObjectResult>(staff).StatusCode);
+
+        var anonymous = await f.Controller(null).Decide(created.RequestId, Decision("Approved", 6));
+        Assert.Equal(401, Assert.IsAssignableFrom<ObjectResult>(anonymous).StatusCode);
+
+        var unknown = await f.Controller(Ims).Decide("SR-999999", Decision("Approved", 6));
+        Assert.Equal(404, Assert.IsAssignableFrom<ObjectResult>(unknown).StatusCode);
+    }
+
+    [Fact]
+    public async Task A_decision_that_beats_the_submit_acknowledgement_still_applies()
+    {
+        using var f = new Fixture();
+        f.Ims.Respond = _ => FakeIms.Status(HttpStatusCode.GatewayTimeout);
+        var created = await f.Request(); // POS never saw IMS's 201
+
+        await f.Approve(created.RequestId, 6);
+        f.Ims.Respond = _ => FakeIms.Created("req_551");
+        await f.Service.RetryPendingAsync();
+
+        Assert.Equal(StockRequestStatuses.Approved, f.Pos.Db.StockRequests.Single().Status);
+    }
+
+    // ── Delivery ──
+
+    [Fact]
+    public async Task A_manifest_for_an_approved_request_moves_it_in_transit()
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+        await f.Approve(created.RequestId, 4);
+
+        var result = await f.Transfers().ReceiveTransferDetails(Manifest(created.RequestId), f.Service);
+
+        Assert.IsType<OkObjectResult>(result);
+        var request = f.Pos.Db.StockRequests.Single();
+        Assert.Equal(StockRequestStatuses.InTransit, request.Status);
+        Assert.Equal("trans_900", request.TransferId);
+        Assert.Equal(created.RequestId, f.Pos.Db.StockTransfers.Single().StockRequestId);
+
+        // IMS re-posting the same manifest is still fine.
+        Assert.IsType<OkObjectResult>(await f.Transfers().ReceiveTransferDetails(Manifest(created.RequestId), f.Service));
+    }
+
+    [Theory]
+    [InlineData("SR-999999", "8", "UBE-HAL-250")] // unknown request
+    [InlineData(null, "9", "UBE-HAL-250")]        // wrong branch (request id filled in below)
+    [InlineData(null, "8", "OTHER-SKU")]          // manifest lacks the requested SKU
+    public async Task Bad_manifest_links_are_refused_and_nothing_is_saved(string? requestId, string branchId, string sku)
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+        await f.Approve(created.RequestId, 4);
+
+        var result = await f.Transfers().ReceiveTransferDetails(Manifest(requestId ?? created.RequestId, branchId, sku), f.Service);
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Empty(f.Pos.Db.StockTransfers);
+        Assert.Equal(StockRequestStatuses.Approved, f.Pos.Db.StockRequests.Single().Status);
+    }
+
+    [Fact]
+    public async Task A_manifest_for_a_request_IMS_has_not_approved_is_refused()
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+
+        var result = await f.Transfers().ReceiveTransferDetails(Manifest(created.RequestId), f.Service);
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Empty(f.Pos.Db.StockTransfers);
+    }
+
+    [Fact]
+    public async Task Receiving_the_delivery_fulfils_the_request_and_tells_IMS()
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+        await f.Approve(created.RequestId, 4);
+        await f.Transfers().ReceiveTransferDetails(Manifest(created.RequestId), f.Service);
+
+        f.Pos.SignIn(Manager);
+        f.Ims.Respond = _ => FakeIms.Status(HttpStatusCode.OK, "{}");
+        var receiving = new TransferReceivingService(f.Pos.Db, f.Client, f.Pos.Accessor, NullLogger.For<TransferReceivingService>(), f.Pos.Audit);
+        var line = f.Pos.Db.StockTransferItems.Single();
+        await receiving.ReceiveAsync("trans_900", new ReceiveTransferRequest
+        {
+            Lines = [new ReceiveTransferLineRequest { LineId = line.Id, ReceivedQuantity = 3, DamagedQuantity = 1, DiscrepancyReason = "One pouch torn" }],
+        });
+
+        var request = f.Pos.Db.StockRequests.Single();
+        Assert.Equal(StockRequestStatuses.Fulfilled, request.Status);
+        Assert.Equal(3, request.ReceivedQuantity);
+        Assert.NotNull(request.FulfilledAt);
+        Assert.Equal(5 + 3, f.Pos.Db.Stocks.Single(s => s.VariationId == 11 && s.LocationId == 8).Quantity);
+
+        var confirmation = f.Ims.Calls.Last();
+        Assert.Equal("/api/scms/transfers/trans_900/receive-confirmation", confirmation.Path);
+        Assert.Contains($"\"stockRequestId\":\"{created.RequestId}\"", confirmation.Body);
+    }
+
+    // ── Sign-in routing ──
+
+    [Theory]
+    [InlineData("PUT", "/api-pos/stock-requests/SR-000001/status", true)]
+    [InlineData("PUT", "/api-pos/stock-requests/SR-000001/cancel", false)]
+    [InlineData("PUT", "/api-pos/stock-requests/SR-000001/status/extra", false)]
+    [InlineData("POST", "/api-pos/stock-requests", false)]
+    [InlineData("GET", "/api-pos/stock-requests", false)]
+    public void Only_the_status_route_accepts_the_IMS_service_key(string method, string path, bool expected)
+    {
+        Assert.Equal(expected, ScmsServiceAuth.IsServiceRoute(new PathString(path), method));
+    }
+}

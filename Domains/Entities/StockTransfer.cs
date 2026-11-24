@@ -25,5 +25,8 @@ public class StockTransfer
     public string ReconciliationState { get; set; } = "Unreconciled"; // Unreconciled, Matched, Discrepancy
     public DateTime? ReconciledAt { get; set; }
 
+    // The POS stock request (e.g. SR-000123) this delivery fulfils; null for deliveries IMS sends on its own.
+    public string? StockRequestId { get; set; }
+
     public ICollection<StockTransferItem> Items { get; set; } = new List<StockTransferItem>();
 }

@@ -303,6 +303,7 @@ public sealed class PortalSessionMiddleware
             return SalesReportsModule;
         if (path.StartsWithSegments("/api-pos/inventory", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWithSegments("/api-pos/transfers", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWithSegments("/api-pos/stock-requests", StringComparison.OrdinalIgnoreCase) ||
             path.StartsWithSegments("/api-pos/branches", StringComparison.OrdinalIgnoreCase))
             return StockManagementModule;
 

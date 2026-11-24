@@ -14,6 +14,8 @@ public class ReceiveConfirmationDto
     public string Status { get; set; } = "Completed";
     public List<ReceivedProductDto> ReceivedProducts { get; set; } = new();
     public string Notes { get; set; } = string.Empty;
+    /// <summary>Copied from the manifest; informational, so IMS can close the request on its side.</summary>
+    public string? StockRequestId { get; set; }
 }
 
 public class ReceivedProductDto

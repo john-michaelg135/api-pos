@@ -68,6 +68,48 @@ public static class StockAudit
         },
     };
 
+    /// <summary>A branch asked IMS for stock; created once, so the request id is its identity.</summary>
+    public static AuditEvent StockRequested(StockRequest request, string item, string? branch) => new()
+    {
+        Module = PosModules.StockManagement,
+        Action = AuditActions.Created,
+        Target = RequestTarget(request),
+        Describe = who => $"{who} requested {request.Quantity} × {item} from IMS{OrderAudit.AtBranch(branch, request.LocationId)} ({request.RequestId}).",
+        OccurredAt = request.RequestedAt,
+        OperationId = $"stock-request:{request.RequestId}",
+        Metadata = RequestMetadata(request, "stock_requested", previousStatus: null),
+    };
+
+    /// <summary>IMS approved or rejected a request. A request is decided once (the status gate refuses a second).</summary>
+    public static AuditEvent StockRequestDecided(StockRequest request, string item, string? branch, string previousStatus) => new()
+    {
+        Module = PosModules.StockManagement,
+        Action = AuditActions.Updated,
+        Actor = AuditActor.Process("ims", string.IsNullOrWhiteSpace(request.DecidedByName) ? "IMS" : $"IMS · {request.DecidedByName}"),
+        Target = RequestTarget(request),
+        Describe = who => request.Status == StockRequestStatuses.Approved
+            ? $"{who} approved {request.ApprovedQuantity} of {request.Quantity} × {item}{OrderAudit.AtBranch(branch, request.LocationId)} ({request.RequestId})."
+            : $"{who} rejected the request for {request.Quantity} × {item}{OrderAudit.AtBranch(branch, request.LocationId)} ({request.RequestId}).",
+        OccurredAt = request.DecidedAt ?? DateTime.UtcNow,
+        OperationId = $"stock-request-decided:{request.RequestId}",
+        Metadata = RequestMetadata(request, "stock_request_decided", previousStatus),
+    };
+
+    private static AuditTarget RequestTarget(StockRequest request) =>
+        new("stock_request", request.RequestId, $"Stock request {request.RequestId}");
+
+    private static Dictionary<string, object?> RequestMetadata(StockRequest request, string operation, string? previousStatus) => new()
+    {
+        ["operation"] = operation,
+        ["location_id"] = request.LocationId,
+        ["variation_id"] = request.VariationId,
+        ["sku"] = request.Sku,
+        ["quantity"] = request.Quantity,
+        ["approved_quantity"] = request.ApprovedQuantity,
+        ["previous_status"] = previousStatus,
+        ["new_status"] = request.Status,
+    };
+
     public static string ItemLabel(ProductVariation? variation)
     {
         var product = variation?.Product?.ProductName;
