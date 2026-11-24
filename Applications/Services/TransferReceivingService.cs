@@ -130,7 +130,7 @@ public class TransferReceivingService
             item.DamagedQuantity = count.DamagedQuantity;
             if (count.ReceivedQuantity == 0) continue;
 
-            var lineNote = $"SCMS delivery {transfer.TransferId}";
+            var lineNote = "IMS Delivery";
             if (count.DamagedQuantity > 0) lineNote += $" · {count.DamagedQuantity} damaged";
             if (count.DiscrepancyReason is not null) lineNote += $" · {count.DiscrepancyReason}";
 

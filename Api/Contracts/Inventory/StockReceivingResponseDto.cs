@@ -11,6 +11,7 @@ public class StockReceivingResponseDto
     public int LocationId { get; set; }
     public string LocationName { get; set; } = string.Empty;
     public int QuantityReceived { get; set; }
+    public string? TransferId { get; set; }
     public string? Notes { get; set; }
     public int? ReceivedBy { get; set; }
     public DateTime ReceivedAt { get; set; }

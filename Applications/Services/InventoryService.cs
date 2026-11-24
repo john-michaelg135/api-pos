@@ -166,6 +166,16 @@ private readonly IAuditLogService _auditLogService;
         return response;
     }
 
+    private static string? DeliveryHistoryNotes(StockReceiving receipt)
+    {
+        if (receipt.TransferId is null || receipt.Notes is null) return receipt.Notes;
+        var legacyPrefix = $"SCMS delivery {receipt.TransferId}";
+        if (receipt.Notes == legacyPrefix) return "IMS Delivery";
+        return receipt.Notes.StartsWith(legacyPrefix + " ", StringComparison.Ordinal)
+            ? "IMS Delivery" + receipt.Notes[legacyPrefix.Length..]
+            : receipt.Notes;
+    }
+
     public async Task<List<StockReceivingResponseDto>> GetStockReceivingHistoryAsync()
     {
         var history = await _db.StockReceivings
@@ -184,7 +194,8 @@ private readonly IAuditLogService _auditLogService;
             LocationId = sr.LocationId,
             LocationName = sr.Location?.LocationName ?? string.Empty,
             QuantityReceived = sr.QuantityReceived,
-            Notes = sr.Notes,
+            TransferId = sr.TransferId,
+            Notes = DeliveryHistoryNotes(sr),
             ReceivedBy = sr.ReceivedBy,
             ReceivedAt = sr.ReceivedAt
         }).ToList();
