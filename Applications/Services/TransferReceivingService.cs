@@ -237,8 +237,8 @@ public class TransferReceivingService
 
         var total = plan.Sum(p => p.Count.ReceivedQuantity);
         return transfer.StatusSyncState == "Acknowledged"
-            ? $"Received {total} units into stock. SCMS was notified."
-            : $"Received {total} units into stock. SCMS couldn't be reached; it will be notified automatically.";
+            ? $"Received {total} units into stock. IMS was notified."
+            : $"Received {total} units into stock. IMS will be notified automatically.";
     }
 
     // Active variations keyed by SKU: the SKU column, or, for variations made before the
