@@ -1535,7 +1535,7 @@ public class OrderManagementService : IOrderManagementService
         if (currentUser?.SubRole == "Cashier" && currentUser.LocationId.HasValue && order.LocationId != currentUser.LocationId && order.OrderSource != "Ecommerce")
             throw new InvalidOperationException("You are not authorized to perform this action for other locations or ecommerce orders.");
 
-        if (order.OrderStatus == "Void Requested" || order.OrderStatus == "Voided" || order.OrderStatus == "Cancelled" || order.OrderStatus == "Refund Requested" || order.OrderStatus == "Refunded")
+        if (order.OrderStatus is "Shipped" or "Void Requested" or "Voided" or "Cancelled" or "Refund Requested" or "Refunded")
             throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Cannot request void.");
 
         if (await _db.RefundRequests.AnyAsync(r => r.OrderId == order.OrderId && r.Status == "Approved"))

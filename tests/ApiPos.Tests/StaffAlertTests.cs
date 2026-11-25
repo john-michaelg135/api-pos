@@ -257,6 +257,22 @@ public class StaffAlertTests
     }
 
     [Fact]
+    public async Task Shipped_order_rejects_void_request_without_raising_an_alert()
+    {
+        using var w = new World();
+        w.Pos.SignIn(Cashier);
+        var order = w.Pos.Db.Orders.Single(o => o.OrderId == 4821);
+        order.OrderStatus = "Shipped";
+        await w.Pos.Db.SaveChangesAsync();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => w.Orders.RequestVoidAsync(4821, "Customer changed mind"));
+
+        Assert.Contains("Shipped", error.Message);
+        Assert.Equal("Shipped", order.OrderStatus);
+        Assert.Empty(w.Pos.Db.StaffAlerts);
+    }
+
+    [Fact]
     public async Task Void_request_and_decision_follow_the_same_rules()
     {
         using var w = new World();
