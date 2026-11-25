@@ -3,6 +3,7 @@ using Api.Contracts.StockRequests;
 using Api.Middlewares;
 using Applications.Audit;
 using Applications.Interfaces;
+using Applications.StaffAlerts;
 using Domains.Entities;
 using Infrastructures.Externals;
 using Infrastructures.Persistence;
@@ -388,6 +389,21 @@ public class StockRequestService
         request.DecidedAt = dto.DecidedAt == default ? DateTime.UtcNow : dto.DecidedAt.ToUniversalTime();
         request.SentAt ??= DateTime.UtcNow;
         request.LastSendError = null;
+
+        // Staff bell: the requester alone hears the decision, saved in the same commit. An IMS retry
+        // of the same decision returned above, and the occurrence key is unique besides.
+        _db.RaiseStaffAlert(new StaffAlertIntent
+        {
+            Kind = status == StockRequestStatuses.Approved ? StaffAlertKinds.StockRequestApproved : StaffAlertKinds.StockRequestRejected,
+            OccurrenceKey = StaffAlertIntent.StockRequestDecisionKey(request.RequestId),
+            LocationId = request.LocationId,
+            VariationId = request.VariationId,
+            StockRequestId = request.RequestId,
+            RequestedQuantity = request.Quantity,
+            ApprovedQuantity = request.ApprovedQuantity,
+            Remarks = request.Remarks,
+            PersonPortalUserId = await RequesterPortalIdAsync(request, cancellationToken),
+        });
         await _db.SaveChangesAsync(cancellationToken);
 
         await _audit.RecordAsync(StockAudit.StockRequestDecided(
@@ -431,6 +447,23 @@ public class StockRequestService
     }
 
     // ── Helpers ──
+
+    /// <summary>
+    /// The requester's Portal ID. Portal sessions record it as RequestedBy; a session without one
+    /// recorded the username, which is mapped through PosStaffUsers when it can be. Empty reaches no one.
+    /// </summary>
+    private async Task<string?> RequesterPortalIdAsync(StockRequest request, CancellationToken cancellationToken)
+    {
+        var requestedBy = request.RequestedBy?.Trim();
+        if (string.IsNullOrEmpty(requestedBy)) return null;
+        if (await _db.PosStaffUsers.AsNoTracking().AnyAsync(s => s.AuthUserId == requestedBy, cancellationToken))
+            return requestedBy;
+        var byUsername = await _db.PosStaffUsers.AsNoTracking()
+            .Where(s => s.Username == requestedBy)
+            .Select(s => s.AuthUserId)
+            .FirstOrDefaultAsync(cancellationToken);
+        return string.IsNullOrWhiteSpace(byUsername) ? requestedBy : byUsername;
+    }
 
     /// <summary>The SKU IMS knows the variation by: the Sku column, or the "SKU|…" name prefix of older rows.</summary>
     public static string? SkuOf(ProductVariation variation)

@@ -1,8 +1,9 @@
 namespace Applications.StaffAlerts;
 
 /// <summary>
-/// Title, body and POS destination for an alert. Text names the order, delivery or item and the
-/// branch, never amounts, customers, proof images or PINs: it is copied to the Portal inbox.
+/// Title, body and POS destination for an alert. Text names the order, delivery, stock request or
+/// item and the branch (plus stock quantities and IMS's remarks on a stock request decision), never
+/// money amounts, customers, proof images or PINs: it is copied to the Portal inbox.
 /// </summary>
 public static class StaffAlertText
 {
@@ -51,9 +52,45 @@ public static class StaffAlertText
                 "Low stock",
                 $"{itemLabel ?? "An item"}{at} is below its minimum stock level.",
                 $"/stock-management?tab=levels&locationId={intent.LocationId}&variationId={intent.VariationId}"),
+            StaffAlertKinds.StockRequestApproved => new(
+                "Stock request approved",
+                Fit(ApprovedBody(intent, itemLabel ?? "an item", at)),
+                StockRequestLink(intent)),
+            StaffAlertKinds.StockRequestRejected => new(
+                "Stock request rejected",
+                RejectedBody(intent, itemLabel ?? "an item", at),
+                StockRequestLink(intent)),
             _ => throw new ArgumentOutOfRangeException(nameof(intent), intent.Kind, "Unknown staff alert kind."),
         };
     }
+
+    /// <summary>The StaffAlerts.Body column; IMS remarks are shortened to fit it.</summary>
+    public const int MaxBodyLength = 500;
+
+    private static string ApprovedBody(StaffAlertIntent intent, string item, string at)
+    {
+        var approved = intent.ApprovedQuantity ?? 0;
+        var requested = intent.RequestedQuantity ?? approved;
+        var units = requested == 1 ? "unit" : "units";
+        var amount = approved >= requested
+            ? (requested == 1 ? $"the 1 requested {units}" : $"all {requested} requested {units}")
+            : $"{approved} of {requested} requested {units}";
+        return $"IMS approved {amount} of {item} for request {intent.StockRequestId}{at}. " +
+               "You'll get another alert when the delivery arrives.";
+    }
+
+    private static string RejectedBody(StaffAlertIntent intent, string item, string at)
+    {
+        var head = $"IMS rejected request {intent.StockRequestId} for {item}{at}.";
+        var remarks = intent.Remarks?.Trim();
+        return Fit(string.IsNullOrEmpty(remarks) ? head : $"{head} Reason: {remarks}");
+    }
+
+    private static string Fit(string body) =>
+        body.Length <= MaxBodyLength ? body : body[..(MaxBodyLength - 1)].TrimEnd() + "…";
+
+    private static string StockRequestLink(StaffAlertIntent intent) =>
+        $"/stock-management?tab=requests&locationId={intent.LocationId}&requestId={Uri.EscapeDataString(intent.StockRequestId ?? string.Empty)}";
 
     /// <summary>"Ube Halaya (Jar · 300g)" from a product and a "SKU|Jar|300g" variation name.</summary>
     public static string ItemLabel(string? productName, string? variationName)
