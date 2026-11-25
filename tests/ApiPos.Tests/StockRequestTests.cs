@@ -5,6 +5,7 @@ using Api.Contracts.StockRequests;
 using Api.Controllers;
 using Api.Middlewares;
 using Applications.Services;
+using Applications.StaffAlerts;
 using Domains.Entities;
 using Infrastructures.Externals;
 using Microsoft.AspNetCore.Http;
@@ -628,6 +629,161 @@ public class StockRequestTests
         var confirmation = f.Ims.Calls.Last();
         Assert.Equal("/api/scms/transfers/trans_900/receive-confirmation", confirmation.Path);
         Assert.Contains($"\"stockRequestId\":\"{created.RequestId}\"", confirmation.Body);
+    }
+
+    // ── Decision alerts (issue #13) ──
+
+    private static StaffViewer StockViewer(CurrentUserContext user, params string[] modules) =>
+        new(user.PortalUserId!, user.Role, modules.Length == 0 ? [StaffAlertAccess.StockManagementModule] : modules, user.LocationIds);
+
+    [Fact]
+    public async Task A_partial_approval_alerts_only_the_requester_once_with_the_approved_quantity()
+    {
+        using var f = new Fixture();
+        var created = await f.Request(12);
+
+        var controller = f.Controller(Ims);
+        await controller.Decide(created.RequestId, Decision("Approved", 8));
+        await controller.Decide(created.RequestId, Decision("Approved", 8)); // IMS retry
+
+        var alert = Assert.Single(f.Pos.Db.StaffAlerts);
+        Assert.Equal(StaffAlertKinds.StockRequestApproved, alert.Kind);
+        Assert.Equal(StaffAlertAccess.StockManagementModule, alert.Module);
+        Assert.Equal(StaffAlertAudiences.Requester, alert.Audience);
+        Assert.Equal(Manager.PortalUserId, alert.RecipientPortalUserId);
+        Assert.Equal(8, alert.LocationId);
+        Assert.Null(alert.ReadAt);
+        Assert.Equal("Stock request approved", alert.Title);
+        Assert.Equal(
+            $"IMS approved 8 of 12 requested units of Ube Halaya (Pouch · 250g) for request {created.RequestId} at TriNoma Bazaar. " +
+            "You'll get another alert when the delivery arrives.",
+            alert.Body);
+        Assert.Equal($"/stock-management?tab=requests&locationId=8&requestId={created.RequestId}", alert.LinkPath);
+
+        var feed = new StaffAlertFeed(f.Pos.Db);
+        Assert.Equal(1, await feed.UnreadCountAsync(StockViewer(Manager)));
+        Assert.Equal(0, await feed.UnreadCountAsync(StockViewer(Manager, StaffAlertAccess.OrderManagementModule))); // no Stock Management
+        Assert.Equal(0, await feed.UnreadCountAsync(StockViewer(OtherBranchManager)));
+        var colleague = PosHarness.Staff("portal-user-43", "Lito Santos", "Manager", 8);
+        Assert.Equal(0, await feed.UnreadCountAsync(StockViewer(colleague))); // same branch, not the requester
+    }
+
+    [Fact]
+    public async Task A_full_approval_says_all_units_were_approved()
+    {
+        using var f = new Fixture();
+        var created = await f.Request(6);
+
+        await f.Approve(created.RequestId, 6);
+
+        Assert.StartsWith("IMS approved all 6 requested units of", Assert.Single(f.Pos.Db.StaffAlerts).Body);
+    }
+
+    [Fact]
+    public async Task A_rejection_alerts_the_requester_with_the_IMS_remarks_once()
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+
+        var controller = f.Controller(Ims);
+        await controller.Decide(created.RequestId, Decision("Rejected", remarks: "No stock is available at the warehouse."));
+        await controller.Decide(created.RequestId, Decision("Rejected", remarks: "No stock is available at the warehouse."));
+
+        var alert = Assert.Single(f.Pos.Db.StaffAlerts);
+        Assert.Equal(StaffAlertKinds.StockRequestRejected, alert.Kind);
+        Assert.Equal(Manager.PortalUserId, alert.RecipientPortalUserId);
+        Assert.Equal("Stock request rejected", alert.Title);
+        Assert.Equal(
+            $"IMS rejected request {created.RequestId} for Ube Halaya (Pouch · 250g) at TriNoma Bazaar. Reason: No stock is available at the warehouse.",
+            alert.Body);
+    }
+
+    [Fact]
+    public async Task Long_remarks_are_shortened_to_fit_the_alert()
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+
+        await f.Controller(Ims).Decide(created.RequestId, Decision("Rejected", remarks: new string('x', StockRequestService.MaxNotesLength)));
+
+        var body = Assert.Single(f.Pos.Db.StaffAlerts).Body;
+        Assert.Equal(StaffAlertText.MaxBodyLength, body.Length);
+        Assert.EndsWith("…", body);
+    }
+
+    [Fact]
+    public async Task Each_request_for_the_same_item_gets_its_own_alert()
+    {
+        using var f = new Fixture();
+        var first = await f.Request(4);
+        var second = await f.Request(5);
+
+        await f.Approve(first.RequestId, 4);
+        await f.Controller(Ims).Decide(second.RequestId, Decision("Rejected", remarks: "Already covered by the first one."));
+
+        var alerts = f.Pos.Db.StaffAlerts.OrderBy(a => a.Id).ToList();
+        Assert.Equal(2, alerts.Count);
+        Assert.Contains(first.RequestId, alerts[0].Body);
+        Assert.Contains(first.RequestId, alerts[0].LinkPath);
+        Assert.Contains(second.RequestId, alerts[1].Body);
+        Assert.Contains(second.RequestId, alerts[1].LinkPath);
+    }
+
+    [Fact]
+    public async Task The_delivery_still_raises_its_own_alert_after_the_approval()
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+        await f.Approve(created.RequestId, 4);
+
+        await f.Transfers().ReceiveTransferDetails(Manifest(created.RequestId), f.Service);
+
+        var kinds = f.Pos.Db.StaffAlerts.OrderBy(a => a.Id).Select(a => a.Kind).ToList();
+        Assert.Equal([StaffAlertKinds.StockRequestApproved, StaffAlertKinds.TransferArrived], kinds);
+    }
+
+    [Fact]
+    public async Task A_legacy_username_requester_is_mapped_to_their_Portal_ID()
+    {
+        using var f = new Fixture();
+        var created = await f.Request();
+        var saved = f.Pos.Db.StockRequests.Single();
+        saved.RequestedBy = "mreyes";
+        f.Pos.Db.PosStaffUsers.Add(new PosStaffUser { AuthUserId = Manager.PortalUserId!, Username = "mreyes", FirstSeenAt = DateTime.UtcNow, LastSeenAt = DateTime.UtcNow });
+        await f.Pos.Db.SaveChangesAsync();
+
+        await f.Approve(created.RequestId, 6);
+
+        Assert.Equal(Manager.PortalUserId, Assert.Single(f.Pos.Db.StaffAlerts).RecipientPortalUserId);
+    }
+
+    [Fact]
+    public async Task An_IMS_retry_makes_one_Portal_copy_for_the_requester()
+    {
+        using var f = new Fixture();
+        var gateway = new FakeStaffAlertGateway();
+        gateway.Grant(Manager.PortalUserId!, "Manager", StaffAlertAccess.StockManagementModule);
+        gateway.Grant(OtherBranchManager.PortalUserId!, "Manager", StaffAlertAccess.StockManagementModule);
+        var options = new StaffAlertOptions
+        {
+            Requested = true,
+            GatewayUrl = "https://gateway.test",
+            CallerKey = "caller-key",
+            PortalUrl = "https://portal.test",
+            PortalSystemSecret = "secret",
+            WebOrigin = "https://pos.test",
+        };
+        var created = await f.Request(12);
+
+        var controller = f.Controller(Ims);
+        await controller.Decide(created.RequestId, Decision("Approved", 8));
+        await new StaffAlertDispatcher(f.Pos.Db, gateway, options, Microsoft.Extensions.Logging.Abstractions.NullLogger<StaffAlertDispatcher>.Instance).RunOnceAsync();
+        await controller.Decide(created.RequestId, Decision("Approved", 8)); // retry after the copy went out
+        await new StaffAlertDispatcher(f.Pos.Db, gateway, options, Microsoft.Extensions.Logging.Abstractions.NullLogger<StaffAlertDispatcher>.Instance).RunOnceAsync();
+
+        var copy = Assert.Single(gateway.Copies);
+        Assert.Equal(Manager.PortalUserId, copy.UserId);
+        Assert.Contains("8 of 12", copy.Request.Body);
     }
 
     // ── Sign-in routing ──

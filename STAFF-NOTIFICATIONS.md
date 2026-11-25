@@ -10,16 +10,26 @@ Enterprise Portal inbox as a copy, through the shared notification service.
 | Refund or void requested | Managers (or all-location roles) with **Order Management** at the order's branch, except the requester | `order-history:{id}`: the request's status-history row |
 | Refund or void approved / rejected | The requester only, while they still have Order Management and the branch | `order-history:{id}`: the decision's status-history row |
 | SCMS delivery manifest saved | Managers (or all-location roles) with **Stock Management** at the destination branch | `transfer-arrived:{transferId}` |
+| IMS approves or rejects a stock request (`PUT /api-pos/stock-requests/{id}/status`) | The requester only, while they still have **Stock Management** and the branch | `stock-request-decided:{requestId}` |
 | Stock drops below its branch minimum | Managers (or all-location roles) with **Stock Management** at the branch | `low-stock:{location}:{variation}:{episode}` |
 
 - Alerts are saved in the **same transaction** as the business change. Order alerts are raised in
-  `OrderManagementService`. The manifest alert is raised in `TransfersController`. Low-stock
+  `OrderManagementService`. The manifest alert is raised in `TransfersController`. Stock request decisions are raised in
+  `StockRequestService.ApplyDecisionAsync`. Low-stock
   alerts are raised by `PosDbContext` on every stock write, using `Stocks.LowStockAlertOpen` and
   `Stocks.LowStockEpisode`. A duplicate occurrence is skipped under a savepoint and never fails the
   business change.
 - The requester's Portal ID is captured from the validated session when they file the request.
   Requests filed before this change fall back to `PosStaffUsers.AuthUserId`. When the requester
   can't be identified, the decision reaches no one. It is never broadcast to the branch.
+- A stock request decision names the request (`SR-000123`), the item and the branch. An approval
+  gives the approved and requested quantities ("8 of 12 requested units"). A rejection gives IMS's
+  remarks, shortened if needed to fit the 500-character body. The requester is the request's
+  `RequestedBy` Portal ID (an older username is mapped through `PosStaffUsers`). IMS decides a
+  request only once, so an IMS retry of the same decision never makes a second alert or Portal copy.
+  The delivery alert still follows separately when the manifest arrives. A request IMS refuses while
+  POS is sending it (unknown SKU and the like) isn't a decision callback and raises no alert. It
+  shows as `Rejected` in Stock Requests.
 - Reading `GET /api-pos/inventory/low-stock` has no notification side effects.
 - The `AddStaffAlerts` migration marks existing shortages as already alerted, so the first stock
   write after deploy doesn't flood the bell.
@@ -44,6 +54,7 @@ Each item carries `link`, a relative web-pos path:
 - `/order-management?orderId=…`
 - `/stock-management?tab=receive&transferId=…`
 - `/stock-management?tab=levels&locationId=…&variationId=…`
+- `/stock-management?tab=requests&locationId=…&requestId=…`
 
 Reading an alert never approves a refund or completes a transfer.
 
