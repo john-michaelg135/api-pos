@@ -23,7 +23,7 @@ public class DashboardController : ControllerBase
         _cache = cache;
     }
 
-    // ── Owner dashboard (Super Admin / CEO only) ──
+    // ── Owner dashboard (Admin / CEO only) ──
 
     // GET api-pos/dashboard/owner?period=today|week|month&locationId=&fresh=true
     // fresh=true skips the cache; the dashboard's Refresh button sends it.

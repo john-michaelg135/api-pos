@@ -21,11 +21,11 @@ public static class StaffAlertAccess
 
     public static readonly string[] BellModules = [OrderManagementModule, StockManagementModule];
 
-    private static readonly HashSet<string> AdministratorRoles = new(StringComparer.Ordinal) { "Super Admin", "CEO" };
+    private static readonly HashSet<string> AdministratorRoles = new(StringComparer.Ordinal) { "Admin", "Super Admin", "CEO" };
     private const string GeneralManagerRole = "General Manager";
 
     /// <summary>Every branch, within the Modules they hold.</summary>
-    public static readonly HashSet<string> AllLocationRoles = new(StringComparer.Ordinal) { "Super Admin", "CEO", GeneralManagerRole };
+    public static readonly HashSet<string> AllLocationRoles = new(StringComparer.Ordinal) { "Admin", "Super Admin", "CEO", GeneralManagerRole };
 
     /// <summary>May approve refunds/voids and receive stock (PosRoleAuthorization.RequireManager).</summary>
     public static bool IsActor(string? role) =>

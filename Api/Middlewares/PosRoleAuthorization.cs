@@ -7,6 +7,8 @@ public static class PosRoleAuthorization
 {
     private static readonly HashSet<string> AdministratorRoles = new(StringComparer.Ordinal)
     {
+        // The Enterprise Portal renamed "Super Admin" to "Admin"; the old name is kept for older sessions.
+        "Admin",
         "Super Admin",
         "CEO",
     };

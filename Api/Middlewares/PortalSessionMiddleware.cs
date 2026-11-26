@@ -27,8 +27,10 @@ public sealed class PortalSessionMiddleware
         StockManagementModule,
         SalesReportsModule,
     ];
+    // The Enterprise Portal renamed "Super Admin" to "Admin"; the old name is kept for older sessions.
     private static readonly HashSet<string> AdministratorRoles = new(StringComparer.Ordinal)
     {
+        "Admin",
         "Super Admin",
         "CEO",
     };
@@ -37,6 +39,7 @@ public sealed class PortalSessionMiddleware
     // and never the Dashboard.
     private static readonly HashSet<string> AllLocationRoles = new(StringComparer.Ordinal)
     {
+        "Admin",
         "Super Admin",
         "CEO",
         GeneralManagerRole,
@@ -224,13 +227,13 @@ public sealed class PortalSessionMiddleware
 
         if (isDashboardRequest && !AdministratorRoles.Contains(role))
         {
-            await WriteErrorAsync(context, StatusCodes.Status403Forbidden, "Only the owner may view the Dashboard.");
+            await WriteErrorAsync(context, StatusCodes.Status403Forbidden, "Only Admins and CEOs may view the Dashboard.");
             return;
         }
 
         if (isLocationManagementRequest && !AllLocationRoles.Contains(role))
         {
-            await WriteErrorAsync(context, StatusCodes.Status403Forbidden, "Only Super Admins, CEOs and General Managers can manage locations.");
+            await WriteErrorAsync(context, StatusCodes.Status403Forbidden, "Only Admins, CEOs and General Managers can manage locations.");
             return;
         }
 

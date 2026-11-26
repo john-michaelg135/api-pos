@@ -12,7 +12,7 @@ public sealed class PortalUserDirectory : IPortalUserDirectory
         JOIN public."Role" r ON r.id = u."roleId"
         WHERE u."isDeleted" = false
           AND u."mustChangePassword" = false
-          AND r.name NOT IN ('Super Admin', 'CEO')
+          AND r.name NOT IN ('Admin', 'Super Admin', 'CEO')
           AND EXISTS (
               SELECT 1
               FROM public."AccessGrant" ag
