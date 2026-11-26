@@ -1538,6 +1538,11 @@ public class OrderManagementService : IOrderManagementService
         if (order.OrderStatus is "Shipped" or "Void Requested" or "Voided" or "Cancelled" or "Refund Requested" or "Refunded")
             throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Cannot request void.");
 
+        // A void is only for the business day the order was made (Philippine time, UTC+8, no DST).
+        // After that, the order goes through a refund instead.
+        if (order.CreatedAt.AddHours(8).Date != DateTime.UtcNow.AddHours(8).Date)
+            throw new InvalidOperationException($"Order {order.OrderNumber} can only be voided on the day it was created. Request a refund instead.");
+
         if (await _db.RefundRequests.AnyAsync(r => r.OrderId == order.OrderId && r.Status == "Approved"))
             throw new InvalidOperationException($"Part of order {order.OrderNumber} has already been refunded, so it can't be voided. Request a refund for the remaining items instead.");
 
@@ -1575,6 +1580,11 @@ public class OrderManagementService : IOrderManagementService
 
         if (order.OrderStatus != "Void Requested")
             throw new InvalidOperationException($"Order {order.OrderNumber} is {order.OrderStatus}. Only Void Requested orders can be approved.");
+
+        // Same-day rule as the request: a void is approved on the day the order was made (Philippine time).
+        // A request left over from an earlier day can still be rejected, which puts the order back so it can be refunded.
+        if (order.CreatedAt.AddHours(8).Date != DateTime.UtcNow.AddHours(8).Date)
+            throw new InvalidOperationException($"Order {order.OrderNumber} can only be voided on the day it was created. Reject this void request and request a refund instead.");
 
         if (string.IsNullOrWhiteSpace(pinCode))
             throw new InvalidOperationException("Manager PIN is required to approve a void.");
