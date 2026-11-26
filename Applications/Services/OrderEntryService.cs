@@ -73,7 +73,7 @@ public class OrderEntryService : IOrderEntryService
             {
                 ProductId       = v.Product.ProductId,
                 ProductName     = v.Product.ProductName,
-                ProductImage    = v.Product.ProductImage,
+                ProductImage    = v.Product.PosImage ?? v.Product.ProductImage,
                 ProductCategory = v.Product.ProductCategory,
                 VariationId     = v.VariationId,
                 VariationName   = v.VariationName,

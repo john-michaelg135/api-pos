@@ -201,6 +201,7 @@ public class ProductCatalogService : IProductCatalogService
     public async Task<VariationResponseDto?> SetVariationPriceAsync(int variationId, SetPriceDto dto)
     {
         var variation = await _db.ProductVariations
+            .Include(v => v.Product)
             .Include(v => v.ProductPrices)
             .FirstOrDefaultAsync(v => v.VariationId == variationId);
 
@@ -208,12 +209,15 @@ public class ProductCatalogService : IProductCatalogService
 
         var now = DateTime.UtcNow;
 
+        if (dto.ProductImage != null) variation.Product.PosImage = dto.ProductImage;
+
         // Find current active price and archive it
         var currentActivePrice = variation.ProductPrices.FirstOrDefault(pp => pp.IsActive);
 
         // Saving the same price again is not a change; keep the history free of no-op entries.
         if (currentActivePrice != null && currentActivePrice.Price == dto.Price)
         {
+            if (dto.ProductImage != null) await _db.SaveChangesAsync();
             return new VariationResponseDto
             {
                 VariationId = variation.VariationId,
@@ -569,7 +573,7 @@ public class ProductCatalogService : IProductCatalogService
             ProductName = product.ProductName,
             ProductCategory = product.ProductCategory,
             ProductDescription = product.ProductDescription,
-            ProductImage = product.ProductImage,
+            ProductImage = product.PosImage ?? product.ProductImage,
             IsActive = product.IsActive,
             Variations = product.Variations.Select(v => new VariationResponseDto
             {

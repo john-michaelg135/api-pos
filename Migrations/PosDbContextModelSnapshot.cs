@@ -605,6 +605,9 @@ namespace api_pos.Migrations
                         .HasColumnType("boolean")
                         .HasDefaultValue(true);
 
+                    b.Property<string>("PosImage")
+                        .HasColumnType("text");
+
                     b.Property<string>("ProductCategory")
                         .IsRequired()
                         .HasMaxLength(100)
