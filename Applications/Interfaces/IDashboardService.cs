@@ -4,6 +4,6 @@ namespace Applications.Interfaces;
 
 public interface IDashboardService
 {
-    // Owner dashboard: sales at a glance for today / this week / this month
-    Task<OwnerDashboardDto> GetOwnerDashboardAsync(string? period, int? locationId, CancellationToken cancellationToken = default);
+    // Owner dashboard: sales at a glance for a Philippine date range (no start date = all dates)
+    Task<OwnerDashboardDto> GetOwnerDashboardAsync(DateOnly? dateFrom, DateOnly? dateTo, int? locationId, CancellationToken cancellationToken = default);
 }

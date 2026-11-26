@@ -6,11 +6,12 @@ namespace Api.Contracts.Dashboard;
 /// </summary>
 public class OwnerDashboardDto
 {
-    public string Period { get; set; } = "today";        // today | week | month
     public DateOnly DateFrom { get; set; }
     public DateOnly DateTo { get; set; }
-    public DateOnly PreviousDateFrom { get; set; }
-    public DateOnly PreviousDateTo { get; set; }
+    /// <summary>The period of equal length just before; null for "all dates", which has nothing to compare to.</summary>
+    public DateOnly? PreviousDateFrom { get; set; }
+    public DateOnly? PreviousDateTo { get; set; }
+    public string Granularity { get; set; } = "day";      // trend points: hour | day | month
     public int? LocationId { get; set; }
     public DateTime GeneratedAt { get; set; }
 
@@ -34,7 +35,7 @@ public class DashboardKpiDto
 
 public class DashboardTrendPointDto
 {
-    public string Label { get; set; } = string.Empty;    // "9 AM" for today, "Oct 26" otherwise
+    public string Label { get; set; } = string.Empty;    // "9 AM", "Oct 26" or "Oct", by granularity
     public decimal Sales { get; set; }
     public decimal PreviousSales { get; set; }
     public bool IsFuture { get; set; }                   // later today / later this period — not yet happened

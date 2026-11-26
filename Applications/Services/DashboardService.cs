@@ -25,52 +25,35 @@ public class DashboardService : IDashboardService
     // A single money movement: a payment received (+) or a refund paid out (−).
     private sealed record MoneyEvent(DateTime At, decimal Amount, int? LocationId, string Channel);
 
-    public async Task<OwnerDashboardDto> GetOwnerDashboardAsync(string? period, int? locationId, CancellationToken cancellationToken = default)
+    public async Task<OwnerDashboardDto> GetOwnerDashboardAsync(DateOnly? dateFrom, DateOnly? dateTo, int? locationId, CancellationToken cancellationToken = default)
     {
         var nowUtc = DateTime.UtcNow;
         var nowManila = nowUtc + ManilaOffset;
         var today = DateOnly.FromDateTime(nowManila);
 
-        period = period?.Trim().ToLowerInvariant() switch
-        {
-            "week" => "week",
-            "month" => "month",
-            _ => "today",
-        };
+        // Same periods as the Sales Report. No start date means "all dates": from the first sale, with nothing to compare to.
+        var hasComparison = dateFrom.HasValue;
+        var to = dateTo ?? today;
+        var from = dateFrom ?? await FirstSaleDateAsync(locationId, cancellationToken) ?? to;
+        if (from > to) (from, to) = (to, from);
 
-        // Compare like with like: the same number of elapsed days in the previous period.
-        DateOnly from, previousFrom;
-        switch (period)
-        {
-            case "week":
-                var daysSinceMonday = ((int)today.DayOfWeek + 6) % 7;
-                from = today.AddDays(-daysSinceMonday);
-                previousFrom = from.AddDays(-7);
-                break;
-            case "month":
-                from = new DateOnly(today.Year, today.Month, 1);
-                previousFrom = from.AddMonths(-1);
-                break;
-            default:
-                from = today;
-                previousFrom = today.AddDays(-1);
-                break;
-        }
-
-        var elapsedDays = today.DayNumber - from.DayNumber;
-        var previousTo = previousFrom.AddDays(elapsedDays);
-        // A short previous month (e.g. Feb vs. Mar 31) must not spill into the current one.
-        if (previousTo >= from) previousTo = from.AddDays(-1);
+        // The previous period has the same length and ends the day before this one starts (as in the Sales Report).
+        var lengthDays = to.DayNumber - from.DayNumber + 1;
+        var previousTo = from.AddDays(-1);
+        var previousFrom = previousTo.AddDays(-(lengthDays - 1));
 
         var currentStart = ToUtc(from);
-        var currentEnd = ToUtc(today.AddDays(1));
+        var currentEnd = ToUtc(to.AddDays(1));
         var previousStart = ToUtc(previousFrom);
-        // For "today" compare against yesterday up to the same time of day.
-        var previousEnd = period == "today" ? nowUtc.AddDays(-1) : ToUtc(previousTo.AddDays(1));
+        var previousEnd = ToUtc(previousTo.AddDays(1));
+        // A period still in progress is compared with the same elapsed time of the previous one
+        // (today until 3 PM vs. yesterday until 3 PM), so the comparison isn't lopsided.
+        if (currentEnd > nowUtc && nowUtc > currentStart)
+            previousEnd = previousStart + (nowUtc - currentStart);
 
-        var money = await LoadMoneyEventsAsync(previousStart, currentEnd, locationId, cancellationToken);
+        var money = await LoadMoneyEventsAsync(hasComparison ? previousStart : currentStart, currentEnd, locationId, cancellationToken);
         var currentMoney = money.Where(e => e.At >= currentStart && e.At < currentEnd).ToList();
-        var previousMoney = money.Where(e => e.At >= previousStart && e.At < previousEnd).ToList();
+        var previousMoney = hasComparison ? money.Where(e => e.At >= previousStart && e.At < previousEnd).ToList() : new List<MoneyEvent>();
 
         // Orders that count as a sale: paid in full or with a downpayment, not voided/cancelled.
         var saleOrders = _db.Orders
@@ -103,15 +86,19 @@ public class DashboardService : IDashboardService
 
         // ...the comparison period only needs totals, so the database adds them up.
         var previousOrders = saleOrders.Where(o => o.CreatedAt >= previousStart && o.CreatedAt < previousEnd);
-        var previousTotals = await previousOrders
-            .GroupBy(o => 1)
-            .Select(g => new { Count = g.Count(), Amount = g.Sum(o => o.TotalAmount) })
-            .FirstOrDefaultAsync(cancellationToken);
+        var previousTotals = hasComparison
+            ? await previousOrders
+                .GroupBy(o => 1)
+                .Select(g => new { Count = g.Count(), Amount = g.Sum(o => o.TotalAmount) })
+                .FirstOrDefaultAsync(cancellationToken)
+            : null;
         var previousCount = previousTotals?.Count ?? 0;
-        var previousItemsSold = await _db.OrderItems
-            .AsNoTracking()
-            .Where(i => previousOrders.Any(o => o.OrderId == i.OrderId))
-            .SumAsync(i => (int?)i.Quantity, cancellationToken) ?? 0;
+        var previousItemsSold = hasComparison
+            ? await _db.OrderItems
+                .AsNoTracking()
+                .Where(i => previousOrders.Any(o => o.OrderId == i.OrderId))
+                .SumAsync(i => (int?)i.Quantity, cancellationToken) ?? 0
+            : 0;
 
         var locations = await _db.Locations
             .AsNoTracking()
@@ -125,11 +112,10 @@ public class DashboardService : IDashboardService
 
         var dto = new OwnerDashboardDto
         {
-            Period = period,
             DateFrom = from,
-            DateTo = today,
-            PreviousDateFrom = previousFrom,
-            PreviousDateTo = period == "today" ? previousFrom : previousTo,
+            DateTo = to,
+            PreviousDateFrom = hasComparison ? previousFrom : null,
+            PreviousDateTo = hasComparison ? previousTo : null,
             LocationId = locationId,
             GeneratedAt = nowUtc,
             Sales = new DashboardKpiDto
@@ -150,43 +136,45 @@ public class DashboardService : IDashboardService
             },
         };
 
-        // ── Trend: by hour for today, by day otherwise ──
-        if (period == "today")
+        // ── Trend: by hour for a single day, by day up to two months, by month beyond that ──
+        // Each comparison point is the same slot shifted back by the period's length.
+        var shift = currentStart - previousStart;
+        var buckets = new List<(DateTime Start, DateTime End, string Label)>();
+        if (lengthDays == 1)
         {
+            dto.Granularity = "hour";
             for (var hour = 0; hour < 24; hour++)
-            {
-                var start = currentStart.AddHours(hour);
-                var previous = previousStart.AddHours(hour);
-                dto.Trend.Add(new DashboardTrendPointDto
-                {
-                    Label = new DateTime(2000, 1, 1, hour, 0, 0).ToString("h tt"),
-                    Sales = currentMoney.Where(e => e.At >= start && e.At < start.AddHours(1)).Sum(e => e.Amount),
-                    PreviousSales = money.Where(e => e.At >= previous && e.At < previous.AddHours(1)).Sum(e => e.Amount),
-                    IsFuture = start > nowUtc,
-                });
-            }
+                buckets.Add((currentStart.AddHours(hour), currentStart.AddHours(hour + 1), new DateTime(2000, 1, 1, hour, 0, 0).ToString("h tt")));
+        }
+        else if (lengthDays <= 62)
+        {
+            dto.Granularity = "day";
+            for (var date = from; date <= to; date = date.AddDays(1))
+                buckets.Add((ToUtc(date), ToUtc(date.AddDays(1)), date.ToString("MMM d")));
         }
         else
         {
-            var periodLength = period == "week" ? 7 : DateTime.DaysInMonth(from.Year, from.Month);
-            for (var day = 0; day < periodLength; day++)
+            dto.Granularity = "month";
+            for (var month = new DateOnly(from.Year, from.Month, 1); month <= to; month = month.AddMonths(1))
             {
-                var date = from.AddDays(day);
-                var start = ToUtc(date);
-                var previousDate = previousFrom.AddDays(day);
-                var previousDayStart = ToUtc(previousDate);
-                // Skip comparison days that fall outside the previous period (e.g. day 31 vs. a 30-day month).
-                var hasPrevious = period == "week" || previousDate.Month == previousFrom.Month;
-                dto.Trend.Add(new DashboardTrendPointDto
-                {
-                    Label = date.ToString("MMM d"),
-                    Sales = currentMoney.Where(e => e.At >= start && e.At < start.AddDays(1)).Sum(e => e.Amount),
-                    PreviousSales = hasPrevious
-                        ? money.Where(e => e.At >= previousDayStart && e.At < previousDayStart.AddDays(1)).Sum(e => e.Amount)
-                        : 0,
-                    IsFuture = date > today,
-                });
+                var start = month < from ? from : month;
+                var end = month.AddMonths(1) > to ? to.AddDays(1) : month.AddMonths(1);
+                buckets.Add((ToUtc(start), ToUtc(end), month.ToString(month.Year == today.Year ? "MMM" : "MMM yyyy")));
             }
+        }
+
+        foreach (var (start, end, label) in buckets)
+        {
+            dto.Trend.Add(new DashboardTrendPointDto
+            {
+                Label = label,
+                Sales = currentMoney.Where(e => e.At >= start && e.At < end).Sum(e => e.Amount),
+                // The chart shows the whole previous period, not only the part the totals compare against.
+                PreviousSales = hasComparison
+                    ? money.Where(e => e.At >= start - shift && e.At < end - shift && e.At < currentStart).Sum(e => e.Amount)
+                    : 0,
+                IsFuture = start > nowUtc,
+            });
         }
 
         // ── Sales by branch and by channel ──
@@ -324,6 +312,16 @@ public class DashboardService : IDashboardService
             })
             .OrderBy(b => b.Name)
             .ToList();
+    }
+
+    // Philippine date of the first order, the start of "All dates".
+    private async Task<DateOnly?> FirstSaleDateAsync(int? locationId, CancellationToken cancellationToken)
+    {
+        var first = await _db.Orders
+            .AsNoTracking()
+            .Where(o => !locationId.HasValue || o.LocationId == locationId)
+            .MinAsync(o => (DateTime?)o.CreatedAt, cancellationToken);
+        return first.HasValue ? DateOnly.FromDateTime(first.Value + ManilaOffset) : null;
     }
 
     private static string ChannelOf(string? orderSource, string? orderType) =>
