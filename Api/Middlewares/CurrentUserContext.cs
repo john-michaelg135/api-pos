@@ -51,6 +51,9 @@ public class CurrentUserContext
     public string? PortalUserId { get; set; }
     public string Username { get; set; } = string.Empty;
     public string? DisplayName { get; set; }
+
+    /// <summary>The Portal account's sign-in email, as the Enterprise Portal confirmed it for this session.</summary>
+    public string? Email { get; set; }
     public string[] Apps { get; set; } = Array.Empty<string>();
     public int? LocationId { get; set; }
     public int[] LocationIds { get; set; } = Array.Empty<int>();

@@ -56,6 +56,10 @@ services:
       # Read-only credential for listing active POS users from the Portal database.
       - key: PORTAL_DATABASE_URL
         sync: false
+      # Neon Auth URL the Portal signs in with; used to confirm a manager's password before
+      # revealing their PIN. Same value as NEON_AUTH_BASE_URL on the deployed Portal.
+      - key: NEON_AUTH_BASE_URL
+        sync: false
 
       # ── CORS ──
       # Public origin of the deployed web-pos (Vercel). No trailing slash.

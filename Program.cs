@@ -57,6 +57,18 @@ builder.Services.AddHttpClient("EnterprisePortal", client =>
 {
     client.Timeout = TimeSpan.FromSeconds(5);
 });
+// Manager PIN reveal: confirms the Portal account password with Neon Auth (ticket #15).
+// Cookies are handled by hand so the short-lived check session is never kept in a shared jar.
+builder.Services.AddScoped<IAccountPasswordVerifier, NeonAuthPasswordVerifier>();
+builder.Services.AddHttpClient(NeonAuthPasswordVerifier.HttpClientName, client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(8);
+})
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+{
+    UseCookies = false,
+    AllowAutoRedirect = false,
+});
 
 // Sprint 2
 builder.Services.AddScoped<IPosStaffIdentity, PosStaffIdentity>();
