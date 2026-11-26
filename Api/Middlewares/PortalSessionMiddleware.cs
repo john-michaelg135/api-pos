@@ -245,6 +245,7 @@ public sealed class PortalSessionMiddleware
             PortalUserId = validation.UserId,
             PortalModules = isNotificationsRequest ? [.. grantedModules] : [validatedModule],
             Username = staff.Username!,
+            Email = staff.Email,
             DisplayName = staff.Name,
             Role = role,
             IsSuperUser = AllLocationRoles.Contains(role),
